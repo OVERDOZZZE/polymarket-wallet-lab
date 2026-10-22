@@ -1,0 +1,18 @@
+# secrets
+.env
+.env.live
+*.pem
+# runtime data and history
+data/
+archive/
+*.db
+*.db-wal
+*.db-shm
+# tooling
+.venv/
+.tools/
+frontend/node_modules/
+frontend/dist/
+__pycache__/
+*.pyc
+*.zip

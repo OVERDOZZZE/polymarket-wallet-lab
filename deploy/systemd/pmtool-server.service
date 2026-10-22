@@ -1,0 +1,17 @@
+[Unit]
+Description=Polymarket Wallet Lab - API server + UI (127.0.0.1:8000, reach it through an SSH tunnel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/app
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/app/.venv/bin/python -m backend --no-browser
+Restart=always
+RestartSec=3
+# bots started from the UI are children of the server: a server restart must not kill them
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,32 @@
+
+==============================================================================================================
+8. OUR BOTS: paper results per window (conservative ledger) and the real-money bots
+==============================================================================================================
+           strategy  windows   staked     pnl  per_dollar      t  top5_share  A_win   A_pnl    A_t  B_win   B_pnl    B_t
+        fast_player      253 2583.103  81.815       0.032  2.790       0.408    126  38.414  2.784    127  43.401  1.673
+   fast_player_hold      247 2538.858 243.378       0.096  2.071       0.413    120  99.629  2.008    127 143.749  1.347
+fast_player_livesim      104  796.017  87.424       0.110  1.512       0.763      0   0.000    NaN    104  87.424  1.512
+  fast_player_value       16   78.280  -1.135      -0.015 -0.051         NaN      0   0.000    NaN     16  -1.135 -0.051
+  fast_player_kelly      128  919.060  -3.364      -0.004 -0.086         NaN     58  -9.455 -0.312     70   6.092  0.242
+           maker_v2      275 8693.917 -59.629      -0.007 -0.201         NaN    262 -39.707 -0.134     13 -19.922 -0.866
+         open_drift      153  669.104 -20.853      -0.031 -0.439         NaN     91  -6.050 -0.171     62 -14.803 -0.463
+         copy_maker       22 1096.200 -99.950      -0.091 -0.979         NaN      0   0.000    NaN     22 -99.950 -0.979
+             leader      192  611.081 -35.387      -0.058 -1.008         NaN    114 -16.940 -0.631     78 -18.446 -0.810
+ copy_maker_guarded       10  198.725 -99.975      -0.503 -1.028         NaN      0   0.000    NaN     10 -99.975 -1.028
+      misread_fader       12   47.524 -13.453      -0.283 -1.261         NaN      9 -15.039 -1.783      3   1.585  0.235
+     early_underdog       15   70.218 -30.588      -0.436 -1.340         NaN     15 -30.588 -1.340      0   0.000    NaN
+           maker_v3       19  169.700 -39.700      -0.234 -1.514         NaN     19 -39.700 -1.514      0   0.000    NaN
+      late_taker_v2       40  172.245 -36.718      -0.213 -1.747         NaN     39 -33.421 -1.600      1  -3.296    NaN
+              maker       68  498.700 -98.807      -0.198 -1.861         NaN     39 -81.100 -1.568     29 -17.707 -1.508
+         contrarian       34   96.717 -37.548      -0.388 -2.039         NaN     34 -37.548 -2.039      0   0.000    NaN
+         late_taker       38  105.142 -66.321      -0.631 -4.229         NaN     22 -46.736 -3.410     16 -19.585 -2.614
+               gaps        2    9.770  -0.092      -0.009    NaN         NaN      2  -0.092    NaN      0   0.000    NaN
+t = mean / sd * sqrt(windows) of per-window PnL (|t| > 2 ~ significant); top5_share = share of profit from the 5 best windows
+
+LIVE maker_v2 (real money): 56 windows, PnL $-18.61, cost $313.60, paper twin same windows $-61.73 (paper bankroll is larger)
+  orders 1475; statuses {'cancelled': 1322, 'filled': 116, 'rejected': 35, 'active': 2}
+
+LIVE fast_player_hold (real money): 8 windows, PnL $-12.76, cost $40.28, paper twin same windows $+4.00 (paper bankroll is larger)
+  orders 31; statuses {'failed': 22, 'filled': 9}
+
+Manual live page: 46 trades, 24 settlements, payout $6.34 vs cost $40.57 -> $-34.23

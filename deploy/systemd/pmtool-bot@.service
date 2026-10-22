@@ -1,0 +1,21 @@
+[Unit]
+Description=Polymarket Wallet Lab - paper bot %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/app
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/bin/mkdir -p /home/ubuntu/app/data/bots/%i
+ExecStart=/home/ubuntu/app/.venv/bin/python -m backend.bots.runner %i --quiet
+# higher priority than the server and recorder: feed handling must never wait
+Nice=-5
+# a crash is restarted; a Stop from the UI exits cleanly and stays stopped
+Restart=on-failure
+RestartSec=3
+StandardOutput=append:/home/ubuntu/app/data/bots/%i/bot.log
+StandardError=append:/home/ubuntu/app/data/bots/%i/bot.log
+
+[Install]
+WantedBy=multi-user.target

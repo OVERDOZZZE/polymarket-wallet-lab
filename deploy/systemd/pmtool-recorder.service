@@ -1,0 +1,18 @@
+[Unit]
+Description=Polymarket Wallet Lab - market-data recorder (data/recordings)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/app
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/app/.venv/bin/python -m backend.recorder
+Nice=5
+Restart=always
+RestartSec=3
+StandardOutput=append:/home/ubuntu/app/data/recordings/recorder.log
+StandardError=append:/home/ubuntu/app/data/recordings/recorder.log
+
+[Install]
+WantedBy=multi-user.target
