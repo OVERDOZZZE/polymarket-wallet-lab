@@ -29,6 +29,13 @@ clock and fills against the book as it stood then - the book we hold when the fi
 moment arrives, before that message is applied. A quiet market fills after `match_wait_ms` against the current
 book; a book reconnect in between fails the order.
 
+Live (bots.mode = 'live', read at start): the paper bot keeps running as the twin, and every paper entry also
+sends a real FAK market buy through the bot's own trading Gateway for paper $ x `live_scale` (at least
+Polymarket's $1), capped at the limit price. Hold-to-settlement only. The live ledger (from the order responses,
+the fee taken off in shares as in paper; rebuilt from live_orders on a restart) settles on Polymarket's official
+outcome. A buy is refused once realized live loss + $ still at risk in open windows + the new order would pass
+`live_loss_limit_usd`, so the live account can never lose more than that. `live_paused` stops live buys at once.
+
 Feeds, books, the price model, settlement on the Chainlink TWAP, persistence and the UI snapshot are the PaperBot
 engine (market_maker.py); this module adds the Kraken and Binance feeds, the signal, FAK orders and sells.
 """
@@ -42,6 +49,7 @@ from datetime import datetime
 
 import orjson
 
+from ... import db
 from ...config import BINANCE_FUT_WS, KRAKEN_WS
 from .market_maker import Order, PaperBot
 
@@ -64,6 +72,7 @@ class FastConfig:
     # entry
     fair_mode: str = "anchored"       # anchored | model | both
     min_edge: float = 0.02
+    extra_pay: float = 0.0            # limit = highest price keeping min_edge + this (chase a book that reprices in flight)
     min_price: float = 0.05
     max_price: float = 0.85
     start_delay_s: float = 2.0        # our price to beat is ready ~1.5 s after the open
@@ -88,6 +97,11 @@ class FastConfig:
     match_wait_ms: float = 1500.0
     fee_rate: float = 0.07            # used only when the market lists none
     rebate_share: float = 0.15        # (engine field; takers earn no rebates)
+    # live (bots.mode = 'live')
+    live_scale: float = 0.2           # live $ = paper $ x this (a $100 live account next to a $500 paper one)
+    live_loss_limit_usd: float = 20.0
+    live_max_order_usd: float = 25.0
+    live_paused: bool = False
 
     @classmethod
     def from_dict(cls, d):
@@ -132,11 +146,22 @@ class FastBot(PaperBot):
         self.status["kraken"] = "stopped"
         self.status["binance_fut"] = "stopped"
         self.lat["signal_us"] = collections.deque(maxlen=20000)
+        self.mode = "paper"
+        if not self.offline:
+            self.mode = (db.one("SELECT mode FROM bots WHERE id = ?", (bot_id,)) or {}).get("mode") or "paper"
+        self.gw = None                                          # trading Gateway (live mode)
+        self.live = {}                                          # slug -> live window ledger
+        self.live_log = collections.deque(maxlen=5000)          # one row per live order (UI shows the last 100)
+        self._live_inflight = 0.0
+        if self.mode == "live":
+            self._load_live()
 
     def reset(self, bankroll=None):
         super().reset(bankroll)
         self.pending = []
         self.signals.clear()
+        self.live.clear()
+        self.live_log.clear()
 
     # ------------------------------------------------------------------ feeds
     async def _main(self):
@@ -150,6 +175,13 @@ class FastBot(PaperBot):
             feeds.append(self._kraken())
         if "binance_fut" in src:
             feeds.append(self._binance_fut())
+        if self.mode == "live":
+            from ...trading.gateway import Gateway
+            self.gw = Gateway()
+            self.gw.armed = True                                # mode 'live' is the arming
+            self.gw.light = True                                # nothing competes with the order path
+            self.gw.start(self._loop)
+            feeds.append(self._live_resolver())
         tasks = [asyncio.create_task(c) for c in (*feeds, self._scheduler(), self._ticker(), self._clock(),
                                                   self._resolver(), self._official_prices())]
         await self._stop.wait()
@@ -385,6 +417,8 @@ class FastBot(PaperBot):
         limit, q = ask, round(ask + m.tick, 6)
         while q < 1 and q <= cfg.max_price + 1e-9 and fair - self._cost_ps(m, q) >= cfg.min_edge:
             limit, q = q, round(q + m.tick, 6)
+        if cfg.extra_pay > 0:
+            limit = min(round(limit + cfg.extra_pay, 6), 0.99)
         floor = max(m.min_size * limit * 1.02, 1.0)                 # Polymarket's minimum order
         usd = max(min(cfg.stake_frac * eq, cfg.max_stake_usd), floor)
         open_cost = sum(mk.total_cost() for mk in self.markets.values() if mk.state != "settled")
@@ -395,6 +429,8 @@ class FastBot(PaperBot):
         usd = math.floor(usd * 100) / 100
         sig["limit"], sig["usd"] = limit, usd
         self.pending.append(Fak(m, side, True, limit, usd, 0.0, now, self._corr(now) + cfg.latency_ms, sig))
+        if self.gw is not None:
+            self._live_buy(m, side, limit, usd, sig)
         st["entries"] += 1
         st["last"] = now
         self.counts["orders"] += 1
@@ -554,11 +590,157 @@ class FastBot(PaperBot):
     def _reserved(self):
         return sum(o.budget for o in self.pending if o.buy)
 
+    # ------------------------------------------------------------------ live
+    def _live_win(self, slug, win, start):
+        w = self.live.get(slug)
+        if w is None:
+            w = self.live[slug] = {"slug": slug, "win": win, "start": start, "end": start + win * 60, "orders": 0,
+                                   "up_sh": 0.0, "up_cost": 0.0, "down_sh": 0.0, "down_cost": 0.0,
+                                   "winner": None, "pnl": None}
+        return w
+
+    def _live_add(self, w, side, spent, shares, rate):
+        """A live buy fill: `shares` as the CLOB reports them (before the fee, which is taken in shares)."""
+        avg = spent / shares
+        w[f"{side}_sh"] += spent * (1 - rate * (1 - avg)) / avg
+        w[f"{side}_cost"] += spent
+        w["orders"] += 1
+
+    def _live_pnl(self):
+        """(realized live PnL, $ at risk in unresolved windows + orders in flight)."""
+        realized = sum(w["pnl"] for w in self.live.values() if w["pnl"] is not None)
+        at_risk = sum(w["up_cost"] + w["down_cost"] for w in self.live.values() if w["pnl"] is None)
+        return realized, at_risk + self._live_inflight
+
+    def _load_live(self):
+        """Rebuild the live ledger and order log of the current account from the orders this bot sent."""
+        for r in db.q("SELECT ts, slug, outcome, price, amount, latency_ms, error, data FROM live_orders "
+                      "WHERE origin = ? AND side = 'BUY' AND ts >= ? ORDER BY ts", (self.bot_id, self.account_since or 0.0)):
+            d = db.loads(r["data"], {}) or {}
+            resp, req = d.get("resp") or {}, d.get("req") or {}
+            try:
+                spent, sh = float(resp.get("making_amount") or 0), float(resp.get("taking_amount") or 0)
+                win, start = int(r["slug"].split("-")[-2].rstrip("m")), int(r["slug"].rsplit("-", 1)[-1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            row = {"ts": r["ts"], "slug": r["slug"], "win": win, "side": r["outcome"], "limit": req.get("price", r["price"]),
+                   "paper_usd": req.get("paper_usd"), "usd": r["amount"], "spent": None, "shares": None, "avg": None,
+                   "ms": r["latency_ms"], "sign_ms": d.get("sign_ms"), "post_ms": d.get("post_ms"), "error": r["error"]}
+            if spent > 0 and sh > 0:
+                self._live_add(self._live_win(r["slug"], win, start), r["outcome"], spent, sh, self.cfg.fee_rate)
+                row.update(spent=round(spent, 4), shares=round(sh, 4), avg=round(spent / sh, 4),
+                           result="filled" if spent >= (r["amount"] or 0) - 0.02 else "partial")
+            else:
+                row["result"] = "missed" if "match" in str(r["error"] or "").lower() else "error"
+            self.live_log.append(row)
+
+    def _live_buy(self, m, side, limit, usd, sig):
+        cfg, gw = self.cfg, self.gw
+        usd_l = min(max(math.floor(usd * cfg.live_scale * 100) / 100, 1.0), cfg.live_max_order_usd)
+        realized, at_risk = self._live_pnl()
+        why = None
+        if cfg.live_paused:
+            why = "paused"
+        elif cfg.exit_mode != "hold":
+            why = "scalp_not_live"
+        elif not gw.enabled:
+            why = "no_gateway"
+        elif realized - at_risk - usd_l < -cfg.live_loss_limit_usd - 1e-9:
+            why = "loss_limit"
+        elif gw.balance is not None and gw.balance < usd_l:
+            why = "no_cash"
+        row = {"ts": time.time(), "slug": m.slug, "win": m.minutes, "side": side, "limit": limit,
+               "paper_usd": usd, "usd": usd_l, "spent": None, "shares": None, "avg": None, "ms": None,
+               "sign_ms": None, "post_ms": None,
+               "result": why or "sending", "error": gw.reason if why == "no_gateway" else None}
+        self.live_log.append(row)
+        sig["live"] = row["result"]
+        if why:
+            self.counts[f"live_{why}"] += 1
+            return
+        self._live_inflight += usd_l
+        req = {"slug": m.slug, "outcome": side, "side": "BUY", "type": "market", "amount": usd_l, "price": limit,
+               "origin": self.bot_id, "paper_usd": usd}
+        rate = m.fee_rate if m.fee_rate is not None else cfg.fee_rate
+        fut = self._loop.run_in_executor(gw.pool, gw.place, req)
+        fut.add_done_callback(lambda f: self._live_done(f, m, side, usd_l, rate, row, sig))
+
+    def _live_done(self, fut, m, side, usd_l, rate, row, sig):
+        """Runs on the event loop when the order's response is back."""
+        self._live_inflight = max(0.0, self._live_inflight - usd_l)
+        try:
+            r = fut.result()
+        except Exception as e:
+            r = {"ok": False, "error": f"{type(e).__name__}: {e}"[:200]}
+        row["ms"], row["sign_ms"], row["post_ms"] = r.get("total_ms"), r.get("sign_ms"), r.get("post_ms")
+        spent = sh = 0.0
+        if r.get("ok"):
+            try:
+                spent, sh = float(r.get("making") or 0), float(r.get("taking") or 0)
+            except (TypeError, ValueError):
+                pass
+        if spent > 0 and sh > 0:
+            self._live_add(self._live_win(m.slug, m.minutes, m.start), side, spent, sh, rate)
+            row.update(spent=round(spent, 4), shares=round(sh, 4), avg=round(spent / sh, 4),
+                       result="filled" if spent >= usd_l - 0.02 else "partial")
+        else:
+            err = r.get("error")
+            row["result"] = "missed" if r.get("ok") or "match" in str(err or "").lower() else "error"
+            row["error"] = err
+        sig["live"] = row["result"]
+        self.counts[f"live_{row['result']}"] += 1
+        if row["result"] == "error":
+            self._err(f"live order: {row['error']}")
+
+    async def _live_resolver(self):
+        """Settle live windows on Polymarket's official outcome."""
+        while True:
+            try:
+                for w in [w for w in list(self.live.values()) if w["pnl"] is None and time.time() > w["end"] + 20]:
+                    win = await asyncio.to_thread(self._official, w["slug"])
+                    if win:
+                        w["winner"] = win
+                        w["pnl"] = round(w[f"{win}_sh"] - w["up_cost"] - w["down_cost"], 4)
+                    await asyncio.sleep(0.2)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self._err(f"live resolver: {type(e).__name__}: {e}"[:200])
+            await asyncio.sleep(10)
+
     # ------------------------------------------------------------------ UI
     def _build_snapshot(self):
         super()._build_snapshot()
         s = self._snapshot
         now = time.time()
+        s["mode"] = self.mode
+        if self.mode == "live":
+            realized, at_risk = self._live_pnl()
+            gw, cfg = self.gw, self.cfg
+            done = sorted((w for w in self.live.values() if w["pnl"] is not None), key=lambda w: w["end"])
+            series, cum = [[self.account_since or (done[0]["start"] if done else now), 0.0]], 0.0
+            for w in done:
+                cum += w["pnl"]
+                series.append([w["end"], round(cum, 4)])
+            res = collections.Counter(r["result"] for r in self.live_log)
+            fills = [r for r in self.live_log if r["spent"]]
+            s["live"] = {"enabled": bool(gw and gw.enabled), "reason": gw.reason if gw else "starting",
+                         "paused": cfg.live_paused, "scale": cfg.live_scale, "loss_limit": cfg.live_loss_limit_usd,
+                         "usdc": gw.balance if gw else None, "realized": realized, "at_risk": at_risk,
+                         "room": cfg.live_loss_limit_usd + realized - at_risk,
+                         "halted": realized <= -cfg.live_loss_limit_usd + 1e-9,
+                         "windows_done": len(done), "windows_won": sum(1 for w in done if w["pnl"] > 0),
+                         "spent": sum(w["up_cost"] + w["down_cost"] for w in self.live.values()),
+                         "order_ms": sorted(gw.order_lat)[len(gw.order_lat) // 2] if gw and gw.order_lat else None,
+                         "sent": sum(res[k] for k in ("filled", "partial", "missed", "error", "sending")),
+                         "filled": res["filled"] + res["partial"], "missed": res["missed"], "rejected": res["error"],
+                         "skipped": sum(v for k, v in res.items() if k not in ("filled", "partial", "missed", "error", "sending")),
+                         "spent_filled": sum(r["spent"] for r in fills),
+                         "avg_price": (sum(r["spent"] for r in fills) / sum(r["shares"] for r in fills)) if fills else None,
+                         "pnl_series": series,
+                         "windows": sorted(self.live.values(), key=lambda w: -w["start"])[:60],
+                         "log": list(self.live_log)[-100:],
+                         "gw_errors": list(gw.errors)[-5:] if gw else []}
         s["signals"] = list(self.signals)[-150:]
         s["spike"] = None if self.spike is None else {"id": self.spike["id"], "move": self.spike["move"] * 1e4}
         s["exchanges"] = {k: (h[-1][1] if h else None, (now * 1000 - h[-1][0]) if h else None)

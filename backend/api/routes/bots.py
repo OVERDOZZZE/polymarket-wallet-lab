@@ -26,7 +26,9 @@ def card(b):
             "windows": a.get("windows"), "rebates": t.get("rebate_est"), "bankroll": a.get("bankroll"),
             "fills": t.get("fills"), "maker_fills": t.get("maker_fills"), "taker_fills": t.get("taker_fills"),
             "volume": t.get("volume"), "fees_paid": t.get("fees_paid"),
-            "windows_done": s.get("windows_done"), "windows_won": s.get("windows_won")}
+            "windows_done": s.get("windows_done"), "windows_won": s.get("windows_won"),
+            "live": {**{k: v for k, v in s["live"].items() if k not in ("windows", "log", "pnl_series")},
+                     "pnl_series_": s["live"].get("pnl_series") or []} if s.get("live") else None}
 
 
 @router.get("/strategies")
@@ -41,8 +43,16 @@ SPARK_S = 7 * 86400      # bot cards show the paper account's value over this ra
 @router.get("/bots")
 def list_bots():
     since = time.time() - SPARK_S
-    return [{**card(b), "spark": control.equity(b["id"], account=b["account"], since=since, max_points=168)}
-            for b in registry.list_bots()]
+    out = []
+    for b in registry.list_bots():
+        c = card(b)
+        if c["live"]:      # live bots: the real account's settled PnL, not the paper twin's portfolio
+            pts = [p for p in c["live"].pop("pnl_series_", []) if p[0] >= since][-167:]
+            c["spark"] = pts + [[time.time(), c["live"]["realized"]]]
+        else:
+            c["spark"] = control.equity(b["id"], account=b["account"], since=since, max_points=168)
+        out.append(c)
+    return out
 
 
 class NewBot(BaseModel):

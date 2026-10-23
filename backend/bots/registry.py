@@ -52,8 +52,15 @@ STRATEGIES = {
                        "settlement; all bids pulled on a fast BTC move. From the old PC's 60 h study (+0.7-1.7% per $1 "
                        "on every wallet's maker fills there).",
     },
+    "guard_maker": {
+        "module": "backend.bots.strategies.guard_maker", "engine": "GuardMakerBot", "config": "GuardMakerConfig",
+        "label": "Guarded two-sided maker",
+        "description": "BTC 5m/15m: post-only bids on Up and Down just below fair value for the spread and the maker "
+                       "rebate. When Coinbase/Kraken/Binance spike, the side about to be picked off is cancelled at "
+                       "once (our cancels land in ~30 ms; takers are held ~250-500 ms). Holds to settlement.",
+    },
 }
-MODES = ("paper", "live")     # live execution is wired per strategy later; all bots run paper today
+MODES = ("paper", "live")     # live: fast_player only (real buys next to its paper twin; see fast_player.py)
 
 
 def strategy(name):

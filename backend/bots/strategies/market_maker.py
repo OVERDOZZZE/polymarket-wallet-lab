@@ -736,7 +736,7 @@ class PaperBot:
                 changed = True
             elif et == "last_trade_price" and side:
                 self._on_print(m, side, float(e["price"]), float(e["size"]), str(e.get("side") or "").upper(),
-                               recv)
+                               self._print_ms(recv, ts))
             elif et == "tick_size_change" and side:
                 try:
                     m.tick = float(e.get("new_tick_size") or m.tick)
@@ -750,9 +750,17 @@ class PaperBot:
                 self.lat["e2e_book"].append(self._corr(self.clock() * 1000.0) - ex_ts)
 
     # ------------------------------------------------------------------ fill simulation
+    def _print_ms(self, recv, ts):
+        """When a print is judged against our orders: on receipt (subclasses: at its match time)."""
+        return recv
+
+    def _cancel_lat(self):
+        """Time for a cancel to take effect (subclasses may set it apart from the order latency)."""
+        return self.cfg.latency_ms
+
     def _on_print(self, m, side, price, size, taker_side, now):
         """A real trade on `side` at `price`. Decide which of our resting bids it would have hit."""
-        lat = self.cfg.latency_ms
+        lat = self._cancel_lat()
         if taker_side == "SELL":                 # the bid level the taker consumed
             self._match_print(m, (side, round(price, 4)), size, now)
         elif taker_side == "BUY":
@@ -1126,7 +1134,8 @@ class PaperBot:
             m.orders.append(Order(self._oid, side, px, sz, q, now, lat))
             self.counts["orders"] += 1
         # drop fully cancelled orders
-        m.orders = [o for o in m.orders if o.cancel_ms is None or now < o.cancel_ms + lat]
+        clat = self._cancel_lat()
+        m.orders = [o for o in m.orders if o.cancel_ms is None or now < o.cancel_ms + clat]
 
     def _reserved(self):
         """Collateral locked by our resting bids (a cancel frees it only once it lands)."""
@@ -1149,7 +1158,7 @@ class PaperBot:
         return v
 
     def _cancel_all(self, m, now):
-        lat = self.cfg.latency_ms
+        lat = self._cancel_lat()
         for o in m.orders:
             if o.cancel_ms is None and not o.taker:
                 o.cancel_ms = now

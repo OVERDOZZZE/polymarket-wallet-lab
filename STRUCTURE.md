@@ -84,9 +84,16 @@ backend/                     Python package (server, engines, analysis). Entry: 
                              momentum takes); calibration in its docstring
     strategies/fast_player.py  FastBot: latency taker (FAST_PLAYER_SPEC.md rebuilt): Coinbase/Kraken/Binance spike ->
                              FAK buy before the book reprices; hold or scalp exit; FAK fills on the book at match time
-                             (Polymarket clock), own Kraken + Binance futures feeds, sells, signal log (`signals`)
+                             (Polymarket clock), own Kraken + Binance futures feeds, sells, signal log (`signals`).
+                             Live mode (bots.mode='live', read at start): own Gateway, real FAK buy of paper $ x
+                             live_scale next to each paper entry, live ledger (state `live`; rebuilt from
+                             live_orders by origin, incl. the order log with sign/post ms), live_loss_limit_usd counts open $ as lost,
+                             live_paused = kill switch. State `live` also has fill counts and `pnl_series` (cumulative settled PnL)
     strategies/late_fav.py   LateFavBot: resting 97-99c bids on the near-certain side in a window's last 2 min, held
                              to settlement, pulled on fast BTC moves (from the old PC's study, reports/)
+    strategies/guard_maker.py  GuardMakerBot: two-sided post-only bids around fair (PaperBot quoting) + the fast
+                             player's spike signal (subclass of FastBot): a spike cancels the threatened side at once
+                             and keeps it out for pull_ms. Own cancel latency; prints judged at their match time
   trading/gateway.py         Gateway singleton on the official SDK `polymarket-client` (SecureClient, CLOB V2 orders,
                              auto wallet type), arm/limits, place/cancel, approvals, user-channel fills,
                              balances/positions, market pre-warming
@@ -118,6 +125,9 @@ scripts/migrate_v1.py        one-time v1→v2 migration (already run 2026-10-21;
 scripts/import_btc5m.py      old logger PC's SQLite (data/import/btc5m/raw_db) -> recorder format for replay
                              (--timing home|dublin: as received at home, or re-timed to Dublin's feed latencies)
 scripts/geotest_order.py     one post-only $0.05 order + cancel: checks a server location may trade (run by the user)
+scripts/maker_latency_test.py  N post-only $0.05 orders + cancels: round trips and when each shows on / leaves the
+                             market feed (= takes effect at the engine). Run on the server
+scripts/fast_value_live.py   server: create bot fast-value-live (fast-value's settings) / arm / disarm (mode live|paper)
 deploy/install.sh            Linux server: install/update systemd services (server, recorder, one unit per bot)
 deploy/systemd/              pmtool-server, pmtool-recorder, pmtool-bot@<id> unit files
 archive/v1-2026-10-21/       old Streamlit code, raw v1 files (profiles/, bot_data/, legacy data/) — read-only
@@ -165,7 +175,7 @@ WAL mode; every process/thread opens its own connection via `db.conn()`. Schema 
 |---|---|---|---|
 | `traders` | id | traders/store.py | tracked wallets: name, wallet, asset, window, coverage (JSON), notes, flags |
 | `trader_events` | id | traders/live.py | live-captured trades/redeems of watched traders (`data` = full event JSON) |
-| `bots` | id | bots/registry.py, control.py | strategy, mode (paper/live), config JSON, current `account` number. Bots: `crouch-mm` (market_maker), `ml-copy` (ml_maker), `ml-join` (join_copy) (both stopped on the server 2026-10-22), `crouch-v2` (crouch_v2), `fast-hold` / `fast-scalp` / `fast-value` and `fast-hold-v2` / `fast-scalp-v2` / `fast-value-v2` (fast_player), `late-fav` (late_fav) (server) |
+| `bots` | id | bots/registry.py, control.py | strategy, mode (paper/live), config JSON, current `account` number. Bots: `crouch-mm` (market_maker), `ml-copy` (ml_maker; `ml-join` (join_copy) deleted 2026-10-23), `crouch-v2` (crouch_v2), `fast-hold` / `fast-scalp` / `fast-value` and `fast-hold-v2` / `fast-scalp-v2` / `fast-value-v2` (fast_player), `late-fav` (late_fav) (guard_maker bots `guard-mm-5m` / `guard-mm-15m` deleted from the server 2026-10-23) |
 | `bot_fills` | id; (bot_id, account, ts) | bot process | every (paper) fill incl. maker/taker, rebate, markout. Sells (fast_player scalp) have negative `shares` and `usd` (= net cash received) |
 | `bot_windows` | (bot_id, account, slug) | bot process | per-window settlement record (`data` JSON), upserted until official |
 | `bot_equity` | (bot_id, account, ts) | bot process | portfolio value every 30 s (PnL chart) |
@@ -224,7 +234,7 @@ the home PC are separate.
 | `GET /api/traders/{id}/tables`, `/windows`, `/pnl`, `/window/{slug}`, `/report`, `/files` | analysis outputs |
 | `POST/DELETE /api/traders/{id}/watch`, `GET .../live` | live watching + live snapshot |
 | `GET /api/traders/{id}/export`, `/export-size`, `GET /api/export?ids=` | zip exports |
-| `GET /api/strategies`, `GET/POST /api/bots`, `GET/PATCH/DELETE /api/bots/{id}` | bots (list includes `spark`: current account's value, last 7 days, ≤168 points; plus bankroll, fills/maker/taker, volume, fees, windows_done/won from state.json, summed by the Bots page totals strip) |
+| `GET /api/strategies`, `GET/POST /api/bots`, `GET/PATCH/DELETE /api/bots/{id}` | bots (list includes `spark`: current account's value, last 7 days, ≤168 points; plus bankroll, fills/maker/taker, volume, fees, windows_done/won from state.json, summed by the Bots page totals strip; `live` = the live account summary for live bots, shown on the card instead of the paper twin; their `spark` is the live settled PnL; the totals strip leaves live bots out) |
 | `GET /api/bots/{id}/state`, `/equity`, `/history`, `/latency` | bot data |
 | `GET/POST /api/bots/{id}/changes` | strategy description + bot history / add a note |
 | `POST /api/bots/{id}/start`, `/stop`, `/reset`, `PUT .../config` | bot control |
@@ -266,6 +276,11 @@ the home PC are separate.
 * Paper fills (`market_maker.py`): queue ahead shrinks only by prints and pro-rata cancels; a book shrink and its
   print arrive in either order and are matched within `LEVEL_MATCH_MS`; order latency 200 ms (measured round
   trips 150–310 ms). The CLOB feed sends one `last_trade_price` per taker order (total size, one price).
+  Engine hooks `_cancel_lat()` (cancel delay, default latency_ms) and `_print_ms()` (when a print is judged,
+  default on receipt; guard_maker uses its exchange timestamp).
+* Order timing from Dublin (2026-10-23, scripts/maker_latency_test.py): post-only orders live on the book ~26 ms
+  after sending (p90 ~35), cancels take effect ~26 ms (p90 ~31), book feed 10 ms. Taker (FAK) orders are held
+  by Polymarket: fast-value-live's took 207–2670 ms to post (median ~460) and most found the asks gone.
 * Trader data: data-api timestamps are block time (~1 s after the match); `/trades?user=&takerOnly=true` lists
   only a wallet's taker fills (diff against activity = maker fills).
 * Trader PnL = cash flows + final resolution; fees/rebates excluded.
@@ -281,6 +296,8 @@ the home PC are separate.
   changes with `registry.add_change(bot_id, text, kind)` so the bot page's "About this bot" stays a true log.
 * **Bot going live:** route orders through `trading.gateway.gateway.place(req | {"origin": bot_id})` from the
   server process, or give the bot process its own `Gateway()` (it is self-contained). Set `bots.mode='live'`.
+  fast_player does the latter (see its docstring). When state has `live`, the bot page shows only real-account data
+  (live card, live P/L chart, live KPI strip, "Live account" tab, live column in Signals); the paper twin has its own tab.
 * **New trader metric:** compute in `traders/analysis.py` (into `summary` or a table), expose via
   `routes/traders.py`, render in `pages/traders/sections.tsx`.
 * **New table:** add to `db.SCHEMA`, document in §5.

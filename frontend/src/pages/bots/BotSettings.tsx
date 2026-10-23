@@ -71,9 +71,17 @@ const META: Record<string, Meta> = {
   take_profit: { label: "Sell at a gain of ($/share, after fees)", group: "Exit", step: 0.005 },
   exit_after_s: { label: "Then sell after (s)", help: "…if the loss is no more than the limit below; otherwise hold to settlement.", group: "Exit", step: 1 },
   max_exit_loss: { label: "Max loss to sell at ($/share)", group: "Exit", step: 0.005 },
+  // guarded two-sided maker (guard_maker)
+  pull_ms: { label: "Keep the threatened side out for (ms)", help: "After the last spike tick, the side the move makes stale stays unquoted this long.", group: "Signal", step: 250 },
+  cancel_latency_ms: { label: "Simulated cancel latency (ms)", help: "Time for a cancel to take effect. Measured from Dublin: ~26 ms p50, ~31 ms p90.", group: "Simulation", step: 5 },
   match_wait_ms: { label: "Quiet-market fill wait (ms)", help: "If no book message arrives after the match time, the order fills against the current book after this long.", group: "Simulation", step: 100 },
+  // live mode (bots.mode = 'live')
+  live_paused: { label: "Pause live orders (kill switch)", help: "Takes effect at once; the paper twin keeps trading.", group: "Live" },
+  live_scale: { label: "Live size = paper size ×", help: "0.2 = a $100 live account next to a $500 paper one. Orders below $1 are raised to $1.", group: "Live", step: 0.05 },
+  live_loss_limit_usd: { label: "Live loss limit ($)", help: "Settled losses plus $ in open windows; no new live order once it would pass this.", group: "Live", step: 5 },
+  live_max_order_usd: { label: "Max $ per live order", group: "Live", step: 5 },
 };
-const GROUPS = ["Signal", "Exit", "Quoting", "Risk", "Simulation"] as const;
+const GROUPS = ["Live", "Signal", "Exit", "Quoting", "Risk", "Simulation"] as const;
 
 export function BotSettings({ bot, onClose }: { bot: any; onClose: () => void }) {
   const [cfg, setCfg] = useState<Record<string, any>>({ ...bot.config });

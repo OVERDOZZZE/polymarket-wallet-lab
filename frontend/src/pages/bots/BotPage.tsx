@@ -8,7 +8,11 @@ import { ago, cents, clock, dtUTC, hm, money, num, signed, tone } from "../../li
 import { useNow, usePoll } from "../../lib/hooks";
 import { BotSettings } from "./BotSettings";
 
-const SECTIONS = ["Positions", "Open orders", "Activity", "Signals", "Live markets", "History", "Diagnostics"] as const;
+const SECTIONS = ["Live account", "Positions", "Open orders", "Activity", "Signals", "Paper twin", "Live markets", "History", "Diagnostics"] as const;
+type Section = (typeof SECTIONS)[number];
+// live bots show only real-account data up front; the paper twin (sizing reference) has its own tab
+const LIVE_SECTIONS: Section[] = ["Live account", "Signals", "Paper twin", "Live markets", "Diagnostics"];
+const PAPER_SECTIONS: Section[] = ["Positions", "Open orders", "Activity", "Signals", "Live markets", "History", "Diagnostics"];
 const RANGES: Record<string, number | null> = { "1D": 86400, "1W": 7 * 86400, "1M": 30 * 86400, ALL: null };
 const RANGE_SUB: Record<string, string> = { "1D": "Past day", "1W": "Past week", "1M": "Past month", ALL: "All time" };
 const left = (end: number, now: number) => (end - now <= 0 ? "ended" : `${clock(end - now)} left`);
@@ -18,7 +22,7 @@ export default function BotPage() {
   const bot = usePoll<any>(`/api/bots/${id}`, 5000, [id]);
   const st = usePoll<any>(`/api/bots/${id}/state`, 1000, [id]);
   const eq = usePoll<any>(`/api/bots/${id}/equity`, 30000, [id]);
-  const [sec, setSec] = useState<(typeof SECTIONS)[number]>("Positions");
+  const [pick, setSec] = useState<Section | "">("");
   const [dlg, setDlg] = useState<"" | "settings" | "reset">("");
   const [busy, setBusy] = useState(false);
   const s = st.data?.state;
@@ -35,13 +39,15 @@ export default function BotPage() {
   if (bot.error) return <div className="page"><Empty title="Bot not found">{bot.error}</Empty></div>;
   const counts = s ? { Positions: new Set((s.positions || []).map((p: any) => p.slug + p.side)).size,
                        "Open orders": (s.orders || []).filter((o: any) => o.status !== "cancelling").length } : {};
+  const tabs = (s?.live ? LIVE_SECTIONS : PAPER_SECTIONS).filter((x) => x !== "Signals" || s?.signals);
+  const sec = pick && tabs.includes(pick) ? pick : tabs[0];
   return (
     <div className="page">
       <div className="page-head">
         <div>
           <div className="muted small"><Link to="/bots" style={{ textDecoration: "none" }}>Bots</Link> /</div>
           <h1 className="page-title">{b?.name || id}</h1>
-          <p className="page-sub">{b?.strategy_label} · {b?.mode === "paper" ? "Paper trading on live Polymarket data, no real orders" : b?.mode}</p>
+          <p className="page-sub">{b?.strategy_label} · {b?.mode === "paper" ? "Paper trading on live Polymarket data, no real orders" : "LIVE: real orders, sized from a paper twin that trades alongside"}</p>
         </div>
         <span className="spacer" />
         {running
@@ -56,11 +62,13 @@ export default function BotPage() {
       ) : (
         <>
           <div className="grid2">
-            <ProfileCard s={s} running={running} b={b} />
-            <PnlCard s={s} points={eq.data?.points || []} />
+            {s.live ? <LiveProfileCard s={s} running={running} b={b} /> : <ProfileCard s={s} running={running} b={b} />}
+            {s.live ? <LivePnlCard L={s.live} /> : <PnlCard s={s} points={eq.data?.points || []} />}
           </div>
-          <BotStrip s={s} />
-          <Tabs value={sec} options={s.signals ? SECTIONS : SECTIONS.filter((x) => x !== "Signals")} onChange={setSec} counts={counts} />
+          {s.live ? <LiveStrip s={s} /> : <BotStrip s={s} />}
+          <Tabs value={sec} options={tabs} onChange={setSec} counts={s.live ? { "Live account": (s.live.windows || []).filter((w: any) => w.pnl === null).length } : counts} />
+          {sec === "Live account" && s.live && <LiveAccount L={s.live} />}
+          {sec === "Paper twin" && <PaperTwin s={s} id={id} points={eq.data?.points || []} running={running} />}
           {sec === "Positions" && <Positions s={s} />}
           {sec === "Open orders" && <Orders s={s} />}
           {sec === "Activity" && <Activity s={s} />}
@@ -122,7 +130,7 @@ function PnlCard({ s, points }: { s: any; points: [number, number][] }) {
   return (
     <div className="card">
       <div className="row">
-        <span className="t2"><span className={change >= 0 ? "up" : "dn"}>{change >= 0 ? "▲" : "▼"}</span> Profit/Loss</span>
+        <span className="t2"><span className={change >= 0 ? "up" : "dn"}>{change >= 0 ? "▲" : "▼"}</span> {s.live ? "Paper twin profit/loss (not real money)" : "Profit/Loss"}</span>
         <span className="spacer" />
         <Seg value={rng} options={Object.keys(RANGES)} onChange={setRng} />
       </div>
@@ -139,7 +147,7 @@ function BotStrip({ s }: { s: any }) {
   const t = s.totals || {}, vol = t.volume || 0, done = s.windows_done || 0, won = s.windows_won || 0;
   const mo = s.markout_avg, feed = (s.lat?.clob || [null])[0];
   return <Strip items={[
-    s.signals
+    s.signals && s.strategy === "fast_player"
       ? { label: "Spikes → orders", value: `${(s.counts?.spikes || 0).toLocaleString()} → ${(s.counts?.orders || 0).toLocaleString()}`, sub: `fees paid ${money(t.fees_paid, 2)}` }
       : { label: "Rebates (est.)", value: money(t.rebate_est, 2), sub: vol ? `${((t.rebate_est || 0) / vol * 1e4).toFixed(0)} bps of volume` : "paid daily by Polymarket" },
     { label: "Trading PnL", value: signed(s.trading_pnl || 0), sub: "settled windows, before rebates", tone: tone(s.trading_pnl) },
@@ -148,6 +156,142 @@ function BotStrip({ s }: { s: any }) {
     { label: "Fills", value: (t.fills || 0).toLocaleString(), sub: `${(t.taker_fills || 0).toLocaleString()} taker` },
     { label: "Book feed", value: feed === null || feed === undefined ? "–" : `${Math.round(feed)} ms`, sub: "Polymarket books, p50", tone: feed > 500 ? "dn" : "" },
   ]} />;
+}
+
+// live mode (fast_player): the real account is the main card; the paper twin is shown beside it for comparison
+function LiveProfileCard({ s, running, b }: { s: any; running: boolean; b: any }) {
+  const L = s.live, a = s.account;
+  const [state, cls] = !L.enabled ? ["Not connected", "dn"] : L.halted ? ["Halted: loss limit reached", "dn"] : L.paused ? ["Paused", "warn"] : ["Trading", "up"];
+  return (
+    <div className="card">
+      <div className="pm-prof">
+        <div className="pm-ava live" />
+        <div>
+          <div className="pm-name">{s.name || b?.name}<LiveBadge on={running} /></div>
+          <div className="pm-meta"><b className="dn">REAL MONEY</b> · <span className={cls}>{state}</span>{!L.enabled && L.reason ? ` (${L.reason})` : ""} · size = paper × {L.scale}</div>
+        </div>
+      </div>
+      <div className="pm-stats">
+        <div><div className="v">{L.usdc == null ? "–" : money(L.usdc, 2)}</div><div className="l">Real wallet USDC</div></div>
+        <div><div className={`v ${tone(L.realized)}`}>{signed(L.realized)}</div><div className="l">Live PnL (settled)</div></div>
+        <div><div className="v">{money(L.at_risk, 2)}</div><div className="l">At risk now</div></div>
+      </div>
+      <div className="pm-rows">
+        <span className="l">Loss limit left</span><span className={`v ${L.room < 5 ? "dn" : ""}`}>{money(Math.max(0, L.room), 2)} of {money(L.loss_limit, 0)} <span className="muted small">(open $ counts as lost)</span></span>
+        <span className="l">Live windows won</span><span className="v">{L.windows_done ? `${L.windows_won}/${L.windows_done}` : "–"}</span>
+        <span className="l">Spent live</span><span className="v">{money(L.spent, 2)}</span>
+        <span className="l">Live orders filled</span><span className="v">{L.sent ? `${L.filled}/${L.sent}` : "–"}{L.missed ? <span className="muted small"> · {L.missed} missed</span> : null}{L.rejected ? <span className="dn small"> · {L.rejected} rejected</span> : null}</span>
+        <span className="l">Order latency</span><span className="v">{L.order_ms ? `${Math.round(L.order_ms)} ms` : "–"} <span className="muted small">p50</span></span>
+      </div>
+      <p className="hint" style={{ marginTop: 8 }}>Sized from the paper twin (paper $ × {L.scale}, its {money(a.bankroll, 0)} account is in the Paper twin tab). Every number on this page outside that tab is the real wallet.</p>
+    </div>
+  );
+}
+
+// live P/L: cumulative settled PnL of the real account, one point per settled window
+function LivePnlCard({ L }: { L: any }) {
+  const [rng, setRng] = useState("1D");
+  const now = Date.now() / 1000;
+  const { x, y, change } = useMemo(() => {
+    const pts: [number, number][] = [...(L.pnl_series || []), [now, L.realized || 0]];
+    const span = RANGES[rng];
+    const start = span ? Math.max(now - span, pts[0][0]) : pts[0][0];
+    const prior = pts.filter((p) => p[0] <= start);
+    const base = prior.length ? prior[prior.length - 1][1] : 0;
+    const sel = [[start, base] as [number, number], ...pts.filter((p) => p[0] > start)];
+    return { x: sel.map((p) => p[0]), y: sel.map((p) => p[1] - base), change: (L.realized || 0) - base };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [L.pnl_series, rng, Math.round((L.realized || 0) * 100), Math.floor(now / 60)]);
+  return (
+    <div className="card">
+      <div className="row">
+        <span className="t2"><span className={change >= 0 ? "up" : "dn"}>{change >= 0 ? "▲" : "▼"}</span> Live profit/loss <span className="muted small">real wallet, settled windows</span></span>
+        <span className="spacer" />
+        <Seg value={rng} options={Object.keys(RANGES)} onChange={setRng} />
+      </div>
+      <div className={`big-value ${tone(change)}`}>{signed(change)}</div>
+      <div className="muted small" style={{ marginBottom: 8 }}>{RANGE_SUB[rng]}{L.at_risk > 0 ? ` · ${money(L.at_risk, 2)} in open windows` : ""}</div>
+      <LineChart x={x} ys={[y]} time height={210} zero legend={false}
+                 series={[{ label: "Live P/L", color: C.pnl, width: 2.5, fill: "rgba(139,108,246,0.14)", fmt: (v) => signed(v) }]}
+                 yFmt={(v) => "$" + v.toFixed(0)} />
+    </div>
+  );
+}
+
+function LiveStrip({ s }: { s: any }) {
+  const L = s.live, feed = (s.lat?.clob || [null])[0];
+  const won = L.windows_won || 0, done = L.windows_done || 0;
+  return <Strip items={[
+    { label: "Spikes → live orders", value: `${(s.counts?.spikes || 0).toLocaleString()} → ${(L.sent || 0).toLocaleString()}`, sub: L.skipped ? `${L.skipped} not sent (paused / limit / cash)` : "one per paper entry" },
+    { label: "Fill rate", value: L.sent ? `${Math.round(L.filled / L.sent * 100)}%` : "–", sub: L.sent ? `${L.filled} filled · ${L.missed} missed · ${L.rejected} rejected` : "no live orders yet", tone: L.sent && L.filled < L.sent / 2 ? "warn" : "" },
+    { label: "Live PnL", value: signed(L.realized || 0), sub: "settled windows, after fees", tone: tone(L.realized) },
+    { label: "Live windows won", value: done ? `${won}/${done}` : "–", sub: done ? `${Math.round(won / done * 100)}% positive` : "none settled yet" },
+    { label: "Filled $", value: money(L.spent_filled || 0, 2), sub: L.avg_price ? `avg price ${cents(L.avg_price)}` : "nothing bought yet" },
+    { label: "Book feed", value: feed === null || feed === undefined ? "–" : `${Math.round(feed)} ms`, sub: "Polymarket books, p50", tone: feed > 500 ? "dn" : "" },
+  ]} />;
+}
+
+// the paper twin of a live bot: same signals, simulated fills; its entries size the live orders
+function PaperTwin({ s, id, points, running }: { s: any; id: string; points: [number, number][]; running: boolean }) {
+  return (
+    <div className="col">
+      <p className="hint">Paper only, no real money. The twin trades every signal on simulated fills (order latency {s.cfg?.latency_ms ?? "–"} ms); each of its entries sends one real order of its $ × {s.live.scale}. Compare its fills with the Live account tab to see how far paper is from reality.</p>
+      <div className="grid2">
+        <ProfileCard s={s} running={running} b={null} />
+        <PnlCard s={s} points={points} />
+      </div>
+      <BotStrip s={s} />
+      <div className="t2">Open positions</div>
+      <Positions s={s} />
+      <div className="t2">Activity</div>
+      <Activity s={s} />
+      <div className="t2">Settled windows</div>
+      <History id={id} />
+    </div>
+  );
+}
+
+const LIVE_RESULT: Record<string, [string, string]> = {
+  filled: ["Bought", "up"], partial: ["Bought (part)", "up"], missed: ["Missed: no fill at limit", "warn"], error: ["Rejected", "dn"],
+  sending: ["Sending", ""], paused: ["Paused", "muted"], loss_limit: ["Loss limit", "dn"], no_cash: ["No cash", "warn"],
+  no_gateway: ["Not connected", "dn"], scalp_not_live: ["Scalp not live", "muted"],
+};
+
+function LiveAccount({ L }: { L: any }) {
+  const now = Date.now() / 1000;
+  const log = [...(L.log || [])].reverse();
+  return (
+    <div className="col">
+      {(L.gw_errors || []).length > 0 && <p className="hint dn">{L.gw_errors.map((e: any) => `${hm(e[0])} ${e[1]}`).join(" · ")}</p>}
+      <div className="card flush">
+        <div className="t2" style={{ padding: "10px 14px" }}>Live orders</div>
+        {!log.length ? <Empty title="No live orders yet">Each paper entry also sends a real order of paper $ × {L.scale}.</Empty> : (
+          <Table rows={log} cols={[
+            { key: "ts", label: "When", align: "l", render: (r: any) => <span className="muted">{ago(r.ts, now)}</span> },
+            { key: "m", label: "Market", align: "l", render: (r: any) => { const st = Number(r.slug.split("-").pop()); return mktCell(r.win, st, st + r.win * 60); } },
+            { key: "side", label: "Side", render: (r: any) => <Pill side={r.side}>{cents(r.limit)}</Pill> },
+            { key: "usd", label: "Paper → live $", render: (r: any) => <>{money(r.paper_usd, 2)} <span className="muted">→</span> {money(r.usd, 2)}</> },
+            { key: "fill", label: "Filled", render: (r: any) => r.spent ? <>{money(r.spent, 2)} <span className="muted small">{num(r.shares, 1)} @ {cents(r.avg)}</span></> : "–" },
+            { key: "ms", label: "Latency", title: "Signal to order response: signing + Polymarket's reply", render: (r: any) => r.ms ? <span title={r.sign_ms != null ? `sign ${num(r.sign_ms, 1)} ms · post ${Math.round(r.post_ms)} ms` : ""}>{Math.round(r.ms)} ms{r.sign_ms != null && <span className="muted small"> ({Math.round(r.sign_ms)} + {Math.round(r.post_ms)})</span>}</span> : "–" },
+            { key: "res", label: "Result", align: "l", render: (r: any) => { const [t, c] = LIVE_RESULT[r.result] || [r.result, ""]; return <span className={c} title={r.error || ""}>{t}</span>; } },
+          ]} />
+        )}
+      </div>
+      <div className="card flush">
+        <div className="t2" style={{ padding: "10px 14px" }}>Live windows</div>
+        {!(L.windows || []).length ? <Empty title="No live windows yet" /> : (
+          <Table rows={L.windows} cols={[
+            { key: "m", label: "Market", align: "l", render: (w: any) => mktCell(w.win, w.start, w.end) },
+            { key: "pos", label: "Held", render: (w: any) => <>{w.up_sh > 0 && <Pill side="up">{num(w.up_sh, 1)}</Pill>} {w.down_sh > 0 && <Pill side="down">{num(w.down_sh, 1)}</Pill>}</> },
+            { key: "cost", label: "Cost", render: (w: any) => money(w.up_cost + w.down_cost, 2) },
+            { key: "win", label: "Winner", render: (w: any) => w.winner ? <Pill side={w.winner} /> : <span className="muted">{w.end > now ? "open" : "awaiting result"}</span> },
+            { key: "pnl", label: "PnL", render: (w: any) => w.pnl === null ? "–" : <span className={tone(w.pnl)}>{signed(w.pnl)}</span> },
+          ]} />
+        )}
+        <p className="hint" style={{ padding: "8px 14px" }}>Shares are after the taker fee (taken in shares, as in paper). Winning shares may need redeeming on Polymarket before the USDC is back in the wallet.</p>
+      </div>
+    </div>
+  );
 }
 
 const mktCell = (win: number, start: number, end: number, sub = "") => <BtcMarket title={`Bitcoin Up or Down · ${win}m`} sub={`${hm(start)}–${hm(end)}${sub}`} />;
@@ -216,6 +360,7 @@ function Activity({ s }: { s: any }) {
 }
 
 // fast_player: every spike seen per window, what the bot decided and why, and how its orders filled.
+// guard_maker: the same spikes, with the side whose bids were pulled.
 const RESULT: Record<string, [string, string]> = {
   filled: ["Bought", "up"], partial: ["Bought (part)", "up"], missed: ["Missed: book moved", "warn"], no_book: ["Failed: no book", "dn"],
   order: ["Sending", ""], exit: ["Sold", "up"], exit_partial: ["Sold (part)", "up"], exit_missed: ["Sell missed", "warn"],
@@ -223,6 +368,7 @@ const RESULT: Record<string, [string, string]> = {
   price_floor: ["Below min price", "muted"], max_entries: ["Window full", "muted"], cooldown: ["Cooldown", "muted"],
   busy: ["Order in flight", "muted"], no_model: ["No price to beat yet", "muted"], stale_book: ["Book stale", "dn"],
   stale_chainlink: ["Chainlink stale", "dn"], risk_limit: ["Risk limit", "warn"], cash: ["No cash", "warn"],
+  pulled: ["Pulled bids", "up"], none_resting: ["Nothing resting", "muted"],
   daily_loss: ["Daily loss halt", "dn"], strike_mismatch: ["Price to beat mismatch", "dn"], no_ask: ["No ask", "muted"],
 };
 
@@ -249,7 +395,8 @@ function Signals({ s }: { s: any }) {
             { key: "ask", label: "Ask → fair", render: (r: any) => r.ask === null ? "–" : <>{cents(r.ask)} <span className="muted">→</span> {cents(r.fair)}</> },
             { key: "edge", label: "Edge", title: "Entries: fair − cost per share after fees. Exits: gain per share after fees.", render: (r: any) => r.edge === null ? "–" : <span className={tone(r.edge)}>{num(r.edge * 100, 1, true)}¢</span> },
             { key: "limit", label: "Limit", render: (r: any) => r.limit === null ? "–" : cents(r.limit) },
-            { key: "res", label: "Result", align: "l", render: (r: any) => { const [t, c] = RESULT[r.result] || [r.result, ""]; return <span className={c}>{t}{r.filled ? <span className="muted small"> {num(r.filled, 1)} @ {cents(r.avg)}</span> : null}</span>; } },
+            { key: "res", label: s.live ? "Paper twin" : "Result", align: "l", render: (r: any) => { const [t, c] = RESULT[r.result] || [r.result, ""]; return <span className={c}>{t}{r.result === "pulled" ? <span className="muted small"> {r.filled} order{r.filled === 1 ? "" : "s"}</span> : r.filled ? <span className="muted small"> {num(r.filled, 1)} @ {cents(r.avg)}</span> : null}</span>; } },
+            ...(s.live ? [{ key: "live", label: "Live order", align: "l" as const, render: (r: any) => { if (!r.live) return <span className="muted">–</span>; const [t, c] = LIVE_RESULT[r.live] || [r.live, ""]; return <span className={c}>{t}</span>; } }] : []),
           ]} />
         </div>
       )}

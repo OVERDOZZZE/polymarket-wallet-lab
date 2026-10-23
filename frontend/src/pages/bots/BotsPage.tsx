@@ -27,13 +27,22 @@ export default function BotsPage() {
         {(data || []).map((b) => (
           <div key={b.id} className="card" style={{ cursor: "pointer" }} onClick={() => nav(`/bots/${b.id}`)}>
             <div className="pm-prof" style={{ marginBottom: 10 }}>
-              <div className="pm-ava b" style={{ width: 46, height: 46 }} />
+              <div className={`pm-ava ${b.live ? "live" : "b"}`} style={{ width: 46, height: 46 }} />
               <div>
                 <div className="pm-name" style={{ fontSize: "1.1rem" }}>{b.name}<LiveBadge on={b.running} /></div>
-                <div className="pm-meta">{b.strategy_label} · {b.mode} · account #{b.account}</div>
+                <div className="pm-meta">{b.strategy_label} · {b.live ? <b className="dn">REAL MONEY{b.live.halted ? " · halted" : b.live.paused ? " · paused" : ""}</b> : b.mode} · account #{b.account}</div>
               </div>
             </div>
             <div className="bot-card-body">
+              {b.live ? (
+                <div className="pm-rows">
+                  <span className="l">Wallet</span><span className="v">{b.live.usdc == null ? "–" : money(b.live.usdc, 2)}</span>
+                  <span className="l">Live PnL</span><span className={`v ${tone(b.live.realized)}`}>{signed(b.live.realized)}</span>
+                  <span className="l">At risk</span><span className="v">{money(b.live.at_risk, 2)}</span>
+                  <span className="l">Limit left</span><span className={`v ${b.live.room < 5 ? "dn" : ""}`} title={`of the ${money(b.live.loss_limit, 0)} live loss limit`}>{money(Math.max(0, b.live.room), 2)}</span>
+                  <span className="l">Live windows</span><span className="v">{b.live.windows_done ? `${b.live.windows_won}/${b.live.windows_done}` : "–"}</span>
+                </div>
+              ) : (
               <div className="pm-rows">
                 <span className="l">Portfolio</span><span className="v">{money(b.portfolio, 2)}</span>
                 <span className="l">PnL today</span><span className={`v ${tone(b.pnl_today)}`}>{signed(b.pnl_today)}</span>
@@ -41,7 +50,8 @@ export default function BotsPage() {
                 <span className="l">Rebates (est.)</span><span className="v">{money(b.rebates, 2)}</span>
                 <span className="l">Windows traded</span><span className="v">{b.windows ?? "–"}</span>
               </div>
-              <Sparkline points={b.spark || []} height={76} label="Portfolio · 7 d" />
+              )}
+              <Sparkline points={b.spark || []} height={76} label={b.live ? "Live PnL (real) · 7 d" : "Portfolio · 7 d"} />
             </div>
           </div>
         ))}
@@ -51,16 +61,18 @@ export default function BotsPage() {
   );
 }
 
-// Totals across every bot's current paper account (stopped bots included: their last state counts).
+// Totals across every paper bot's current account (stopped bots included: their last state counts). Live bots are
+// left out: their paper twin only sizes real orders and would double-count the paper bot it copies.
 function BotTotals({ bots }: { bots: any[] }) {
-  const sum = (k: string) => bots.reduce((a, b) => a + (Number.isFinite(b[k]) ? b[k] : 0), 0);
+  const paper = bots.filter((b) => !b.live);
+  const sum = (k: string) => paper.reduce((a, b) => a + (Number.isFinite(b[k]) ? b[k] : 0), 0);
   const running = bots.filter((b) => b.running).length;
   const bankroll = sum("bankroll"), pnl = sum("pnl_total"), today = sum("pnl_today");
   const fills = sum("fills"), maker = sum("maker_fills"), taker = sum("taker_fills");
   const done = sum("windows_done"), won = sum("windows_won");
   const pnlPct = bankroll ? pnl / bankroll : null;
   const winRate = done ? won / done : null;
-  const best = bots.reduce((m, b) => (Number.isFinite(b.pnl_total) && (!m || b.pnl_total > m.pnl_total) ? b : m), null as any);
+  const best = paper.reduce((m, b) => (Number.isFinite(b.pnl_total) && (!m || b.pnl_total > m.pnl_total) ? b : m), null as any);
   const int = (x: number) => Math.round(x).toLocaleString("en-US");
   return (
     <div className="bt-grid">

@@ -67,6 +67,7 @@ class Gateway:
         self.subscribers = set()                          # asyncio.Queue per connected browser
         self.loop = None
         self.errors = collections.deque(maxlen=20)
+        self.light = False                                # bot process: poll USDC only (no token balances/positions)
 
     # ------------------------------------------------------------------ lifecycle
     def start(self, loop):
@@ -119,7 +120,7 @@ class Gateway:
             now = time.time()
             if now - self.balance_ts >= POLL_BALANCE_S:
                 self.refresh_balances()
-            if now - self.positions_ts >= POLL_POSITIONS_S:
+            if not self.light and now - self.positions_ts >= POLL_POSITIONS_S:
                 self.refresh_positions()
             time.sleep(1.0)
 
@@ -240,7 +241,8 @@ class Gateway:
         db.x("INSERT OR REPLACE INTO live_orders (order_id, ts, origin, slug, token_id, outcome, side, order_type, "
              "price, size, amount, status, latency_ms, error, data) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
              (oid, time.time(), req.get("origin", "manual"), m["slug"], token, outcome, side, req["type"], price, size,
-              amount, str(status), total_ms, err, db.dumps({"req": req, "resp": r})))
+              amount, str(status), total_ms, err,
+              db.dumps({"req": req, "resp": r, "sign_ms": round(sign_ms, 2), "post_ms": round(post_ms, 1)})))
         out = {"ok": err is None, "order_id": oid, "status": status, "error": err, "sign_ms": round(sign_ms, 2),
                "post_ms": round(post_ms, 1), "total_ms": round(total_ms, 1), "resp": r,
                "making": (r or {}).get("making_amount"), "taking": (r or {}).get("taking_amount")}
@@ -309,7 +311,7 @@ class Gateway:
             self.balance = int(self._retry(lambda: self.client.get_balance_allowance(asset_type="COLLATERAL")).balance) / 1e6
         except Exception as e:
             self._err(f"balance: {_api_error(e)}")
-        for m in self.window_list():
+        for m in [] if self.light else self.window_list():
             if m["start"] > time.time() + 60:
                 continue
             for tok in m["tokens"].values():
@@ -373,29 +375,44 @@ class Gateway:
             await asyncio.sleep(1.0)
         c = self.client.credentials
         sub = {"auth": {"apiKey": c.key, "secret": c.secret, "passphrase": c.passphrase}, "markets": [], "type": "user"}
-        backoff = 1
+        backoff, drops = 1, collections.deque(maxlen=10)
         while True:
+            up_since = None
             try:
                 self.user_ws = "connecting"
                 async with websockets.connect(CLOB_USER_WS, ping_interval=None, open_timeout=10, max_size=None) as ws:
                     await ws.send(json.dumps(sub))
-                    self.user_ws, backoff, last_ping = "connected", 1, time.time()
+                    self.user_ws, last_ping = "connected", time.time()
+                    up_since = last_rx = time.time()
+                    if drops:                              # catch up on fills/order changes sent while we were away
+                        self.bg.submit(self._after_order)
                     while True:
                         try:
                             raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                            last_rx = time.time()
                             if raw not in ("PONG", b"PONG"):
                                 self._on_user(raw)
                         except asyncio.TimeoutError:
                             pass
+                        if time.time() - last_rx > 30:     # PINGs every 9 s go unanswered: half-open socket
+                            raise ConnectionError("no PONG for 30 s")
                         if time.time() - last_ping > 9:
                             await ws.send("PING")
                             last_ping = time.time()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                # Polymarket drops this socket now and then without a close frame; reconnecting at once and
+                # resyncing is the normal path, so only report it when it keeps happening.
                 self.user_ws = "reconnecting"
-                self._err(f"user channel: {type(e).__name__}: {e}")
-                await asyncio.sleep(backoff)
+                now = time.time()
+                drops.append(now)
+                if up_since and now - up_since > 60:
+                    backoff = 1
+                recent = sum(1 for t in drops if now - t < 600)
+                if recent >= 3 or not up_since:
+                    self._err(f"user channel: {type(e).__name__}: {e} ({recent} drops in 10 min)")
+                await asyncio.sleep(backoff if not up_since or recent > 1 else 0.2)
                 backoff = min(backoff * 2, 30)
 
     def _on_user(self, raw):
