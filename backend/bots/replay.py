@@ -177,8 +177,9 @@ def run(variants, start_ts, end_ts, progress=None, warmup_s=90, rec_dir=None):
                     b._on_book_msg(m, d)
         elif src == "cb":
             d = orjson.loads(raw)
+            is_match = d.get("type") in ("match", "last_match")      # recorder fell back to the matches channel
             for b in bots:
-                b._on_coinbase_msg(d)
+                b._on_coinbase_match(d) if is_match else b._on_coinbase_msg(d)
         elif src == "bn":
             d = orjson.loads(raw)
             for b in bots:

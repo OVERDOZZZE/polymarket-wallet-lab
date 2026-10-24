@@ -243,6 +243,7 @@ class PaperBot:
 
         # price state
         self.cb = {"mid": None, "bid": None, "ask": None, "ts_ms": None, "recv_ms": None}
+        self._cb_mt = {"bid": None, "ask": None}             # quotes rebuilt from the matches channel (fallback)
         self.cb_hist = collections.deque(maxlen=4000)        # (recv_ms, mid) - fine-grained for jump guard
         self.cb_1s = collections.deque(maxlen=1800)          # (sec, mid) - for vol & charts
         self.cl = collections.deque(maxlen=4000)             # (ts_ms, value) Chainlink ticks
@@ -273,7 +274,8 @@ class PaperBot:
         self.cash = self.cfg.bankroll
         self._orphans = {}                                   # slug -> record of a window cut off by a restart
         self.day_key = None
-        self.day_start_value = None
+        self.day_start_value = None                          # today's loss counts from here (midnight, or a reset)
+        self.day_hit_at = None                               # when the daily loss limit stopped entries today
         self._last_equity_write = 0.0
         self.account_since = None
 
@@ -334,6 +336,7 @@ class PaperBot:
             self.cash = self.cfg.bankroll
             self._orphans.clear()
             self.day_start_value = self.cfg.bankroll
+            self.day_hit_at = None
             self.account_since = time.time()
             self.fills.clear()
             self.settled.clear()
@@ -411,6 +414,9 @@ class PaperBot:
 
     # ------------------------------------------------------------------ feeds
     async def _coinbase(self):
+        """BTC-USD ticker. Coinbase allows only ~10 ticker subscriptions per product per IP (every bot and the
+        recorder on one server each take one) and refuses the rest with an error message on an open, then silent,
+        socket. Refused -> the `matches` channel on the same socket: the same trades, one message per match."""
         import websockets
         backoff = 1
         while True:
@@ -424,7 +430,11 @@ class PaperBot:
                     backoff = 1
                     while True:
                         raw = await asyncio.wait_for(ws.recv(), timeout=20)
-                        self._on_coinbase(raw)
+                        if self._on_coinbase(raw) == "limit":
+                            self._err("coinbase: ticker refused (subscription limit for this IP); using matches")
+                            await ws.send(json.dumps({"type": "subscribe", "product_ids": ["BTC-USD"],
+                                                      "channels": ["matches"]}))
+                            self.status["coinbase"] = "connected (matches)"
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -434,7 +444,40 @@ class PaperBot:
                 backoff = min(backoff * 2, 20)
 
     def _on_coinbase(self, raw):
-        self._on_coinbase_msg(orjson.loads(raw))
+        """Returns "limit" when Coinbase refused the ticker subscription; raises on any other error message."""
+        d = orjson.loads(raw)
+        t = d.get("type")
+        if t == "ticker":
+            self._on_coinbase_msg(d)
+        elif t in ("match", "last_match"):
+            self._on_coinbase_match(d)
+        elif t == "error":
+            why = f"{d.get('message')}: {d.get('reason')}"
+            if "subscription limit" in why and "ticker" in why:
+                return "limit"
+            raise RuntimeError(why)
+        return None
+
+    def _on_coinbase_match(self, d):
+        """A trade from the matches channel as a ticker message. The maker's side tells which quote traded: a
+        resting buy (side "buy") is the best bid, a resting sell the best ask; the other side is the last seen,
+        pushed one cent away if the book moved through it. `last_match` (sent on subscribe) only seeds them."""
+        try:
+            px = float(d["price"])
+        except (KeyError, TypeError, ValueError):
+            return
+        q = self._cb_mt
+        if d.get("side") == "buy":
+            q["bid"] = px
+            if q["ask"] is None or q["ask"] <= px:
+                q["ask"] = round(px + 0.01, 2)
+        else:
+            q["ask"] = px
+            if q["bid"] is None or q["bid"] >= px:
+                q["bid"] = round(px - 0.01, 2)
+        if d.get("type") == "match":
+            self._on_coinbase_msg({"type": "ticker", "price": px, "best_bid": q["bid"], "best_ask": q["ask"],
+                                   "time": d.get("time")})
 
     def _on_coinbase_msg(self, d):
         recv = self.clock() * 1000.0
@@ -1262,6 +1305,31 @@ class PaperBot:
     def portfolio_value(self):
         return self.cash + self._positions_value()
 
+    def _daily_limit_usd(self):
+        """$ the bot may lose in a day (strategies with max_daily_loss_frac), else None."""
+        frac = getattr(self.cfg, "max_daily_loss_frac", None)
+        return None if frac is None else frac * self.cfg.bankroll
+
+    def daily_loss_hit(self, eq=None):
+        """True once today's loss passes the daily limit; records when that first happened today."""
+        lim = self._daily_limit_usd()
+        if lim is None or self.day_start_value is None:
+            return False
+        eq = self.portfolio_value() if eq is None else eq
+        if eq >= self.day_start_value - lim:
+            return False
+        if self.day_hit_at is None:
+            self.day_hit_at = time.time()
+        return True
+
+    def reset_day(self):
+        """Clear today's loss: the daily limit counts from the current value. The equity row written now is what
+        _load_history restores after a restart (the API logs the reset in bot_changes)."""
+        with self.lock:
+            self.day_start_value = self.portfolio_value()
+            self.day_hit_at = None
+        self._equity_tick(time.time())
+
     @staticmethod
     def _day_key(ts):
         return time.strftime("%Y-%m-%d", time.localtime(ts))
@@ -1273,6 +1341,7 @@ class PaperBot:
         dk = self._day_key(now_s)
         if self.day_key is not None and self.day_key != dk:
             self.day_start_value = v
+            self.day_hit_at = None
         self.day_key = dk
         self._wq.put(("equity", {"ts": round(now_s, 1), "v": round(v, 4), "cash": round(self.cash, 4)}))
 
@@ -1399,7 +1468,7 @@ class PaperBot:
                 self._err(f"writer: {type(e).__name__}: {e}"[:200])
 
     def _check_control(self):
-        """Commands from the UI (process mode): {"id", "action": stop|reset|config, "config": {...}}.
+        """Commands from the UI (process mode): {"id", "action": stop|reset|reset_day|config, "config": {...}}.
         Whatever is in the file at startup is old and ignored."""
         try:
             mt = self.control_path.stat().st_mtime_ns
@@ -1423,6 +1492,8 @@ class PaperBot:
             self._stop.set()
         elif act == "reset":
             self.reset(cmd.get("bankroll"))
+        elif act == "reset_day":
+            self.reset_day()
         elif act == "config":
             self.set_config(**(cmd.get("config") or {}))
 
@@ -1488,6 +1559,14 @@ class PaperBot:
             first = db.one("SELECT ts FROM bot_equity WHERE bot_id = ? AND account = ? ORDER BY ts LIMIT 1", acc)
             self.account_since = first["ts"] if first else (self.settled[0]["start"] if self.settled else time.time())
         self.day_start_value = before["v"] if before else self.cfg.bankroll
+        # a daily limit reset today (Reset daily limit): count from the value at the reset instead
+        rs = db.one("SELECT ts FROM bot_changes WHERE bot_id = ? AND kind = 'daily_reset' AND ts >= ? "
+                    "ORDER BY ts DESC LIMIT 1", (self.bot_id, today0))
+        if rs:
+            at = db.one("SELECT v FROM bot_equity WHERE bot_id = ? AND account = ? AND ts <= ? ORDER BY ts DESC "
+                        "LIMIT 1", acc + (rs["ts"] + 5,))
+            if at:
+                self.day_start_value = at["v"]
         self.day_key = self._day_key(time.time())
 
     # ------------------------------------------------------------------ UI snapshot
@@ -1554,6 +1633,11 @@ class PaperBot:
                    "pnl_total": portfolio - self.cfg.bankroll, "pnl_today": portfolio - day0, "day_start": day0,
                    "biggest_win": max(wins) if wins else None, "since": self.account_since,
                    "windows": len(done) + sum(1 for m in self.markets.values() if m.fills and m.state != "settled")}
+        lim = self._daily_limit_usd()
+        if lim is not None:
+            tomorrow = time.mktime(time.strptime(self._day_key(now + 86400), "%Y-%m-%d"))
+            account["daily_limit"] = {"limit": lim, "lost": max(0.0, day0 - portfolio), "hit": self.daily_loss_hit(portfolio),
+                                      "hit_at": self.day_hit_at, "resets_at": tomorrow}
         trading = sum(r["trading_pnl"] for r in done)
         rebates_settled = sum(r.get("rebate_est") or 0.0 for r in done)
         series = [(r["start"] + r["win"] * 60, r["trading_pnl"], r.get("rebate_est") or 0.0)

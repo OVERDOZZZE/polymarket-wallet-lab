@@ -1,0 +1,217 @@
+09:11:15 pre-flight: clock offset + TCP connect times ...
+==============================================================================
+SETUP
+==============================================================================
+local clock offset vs time.cloudflare.com: +0.6 ms (SNTP delay 1.2 ms)
+host                              ip                 tcp min  tcp med  (ms; ~1 round trip to the EDGE, not necessarily the origin)
+stream.binance.com                175.41.209.97        197.7    201.4
+ws-feed.exchange.coinbase.com     104.18.36.178          0.9      1.0
+ws-live-data.polymarket.com       104.18.34.205          0.9      1.1
+
+09:11:18 collecting for 900 s ... (don't run heavy jobs on this box meanwhile)
+09:11:19 chainlink (RTDS) connected
+09:11:19 coinbase connected (ticker)
+09:11:19 coinbase error msg: {"type":"error","message":"Failed to subscribe","reason":"subscription limit reached for channel: ticker, id: BTC-USD"}
+09:11:19 coinbase: ticker limit reached on this IP, switching to 'matches'
+09:11:19 binance connected
+09:11:19 coinbase connected (matches)
+09:11:28 ticks so far: binance_book=513, binance=40, coinbase=20, chainlink=9
+09:11:38 ticks so far: binance_book=777, binance=53, coinbase=49, chainlink=19
+09:11:48 ticks so far: binance_book=1966, binance=455, coinbase=91, chainlink=29
+09:11:58 ticks so far: binance_book=2377, binance=482, coinbase=119, chainlink=39
+09:12:09 ticks so far: binance_book=2799, binance=505, coinbase=149, chainlink=49
+09:12:19 ticks so far: binance_book=3252, binance=543, coinbase=198, chainlink=59
+09:12:29 ticks so far: binance_book=3547, binance=569, coinbase=234, chainlink=69
+09:12:39 ticks so far: binance_book=4623, binance=1005, coinbase=262, chainlink=79
+09:12:49 ticks so far: binance_book=5121, binance=1105, coinbase=299, chainlink=89
+09:12:59 ticks so far: binance_book=5324, binance=1115, coinbase=327, chainlink=99
+09:13:09 ticks so far: binance_book=5809, binance=1136, coinbase=356, chainlink=109
+09:13:19 ticks so far: binance_book=6147, binance=1155, coinbase=390, chainlink=119
+09:13:29 ticks so far: binance_book=6362, binance=1171, coinbase=412, chainlink=129
+09:13:39 ticks so far: binance_book=6569, binance=1180, coinbase=442, chainlink=139
+09:13:49 ticks so far: binance_book=6782, binance=1196, coinbase=476, chainlink=149
+09:13:59 ticks so far: binance_book=6993, binance=1210, coinbase=505, chainlink=159
+09:14:09 ticks so far: binance_book=7130, binance=1218, coinbase=538, chainlink=169
+09:14:19 ticks so far: binance_book=7279, binance=1236, coinbase=566, chainlink=178
+09:14:29 ticks so far: binance_book=7444, binance=1253, coinbase=590, chainlink=189
+09:14:39 ticks so far: binance_book=7628, binance=1275, coinbase=615, chainlink=199
+09:14:49 ticks so far: binance_book=8272, binance=1491, coinbase=650, chainlink=209
+09:14:59 ticks so far: binance_book=8600, binance=1516, coinbase=684, chainlink=219
+09:15:09 ticks so far: binance_book=9158, binance=1599, coinbase=729, chainlink=229
+09:15:19 ticks so far: binance_book=9731, binance=1678, coinbase=763, chainlink=239
+09:15:29 ticks so far: binance_book=9994, binance=1696, coinbase=794, chainlink=250
+09:15:39 ticks so far: binance_book=10711, binance=1906, coinbase=835, chainlink=260
+09:15:49 ticks so far: binance_book=11110, binance=1971, coinbase=859, chainlink=269
+09:15:59 ticks so far: binance_book=11402, binance=1985, coinbase=880, chainlink=279
+09:16:09 ticks so far: binance_book=11881, binance=2035, coinbase=910, chainlink=289
+09:16:19 ticks so far: binance_book=12150, binance=2065, coinbase=938, chainlink=299
+09:16:29 ticks so far: binance_book=12470, binance=2084, coinbase=974, chainlink=309
+09:16:39 ticks so far: binance_book=13097, binance=2301, coinbase=1013, chainlink=319
+09:16:49 ticks so far: binance_book=13690, binance=2489, coinbase=1046, chainlink=329
+09:16:59 ticks so far: binance_book=14765, binance=2776, coinbase=1081, chainlink=338
+09:17:09 ticks so far: binance_book=14981, binance=2790, coinbase=1110, chainlink=348
+09:17:19 ticks so far: binance_book=15374, binance=2823, coinbase=1157, chainlink=358
+09:17:29 ticks so far: binance_book=16512, binance=3159, coinbase=1187, chainlink=368
+09:17:39 ticks so far: binance_book=16696, binance=3171, coinbase=1220, chainlink=378
+09:17:49 ticks so far: binance_book=17322, binance=3381, coinbase=1259, chainlink=388
+09:17:59 ticks so far: binance_book=18270, binance=3802, coinbase=1296, chainlink=398
+09:18:09 ticks so far: binance_book=18766, binance=3817, coinbase=1335, chainlink=408
+09:18:19 ticks so far: binance_book=19072, binance=3837, coinbase=1370, chainlink=418
+09:18:29 ticks so far: binance_book=19475, binance=3850, coinbase=1394, chainlink=428
+09:18:39 ticks so far: binance_book=19879, binance=3893, coinbase=1423, chainlink=438
+09:18:49 ticks so far: binance_book=20433, binance=4076, coinbase=1464, chainlink=448
+09:18:59 ticks so far: binance_book=20637, binance=4129, coinbase=1492, chainlink=458
+09:19:09 ticks so far: binance_book=20944, binance=4144, coinbase=1527, chainlink=468
+09:19:19 ticks so far: binance_book=21451, binance=4311, coinbase=1552, chainlink=478
+09:19:29 ticks so far: binance_book=22487, binance=4765, coinbase=1583, chainlink=488
+09:19:39 ticks so far: binance_book=22719, binance=4807, coinbase=1609, chainlink=498
+09:19:49 ticks so far: binance_book=23133, binance=4825, coinbase=1643, chainlink=508
+09:19:59 ticks so far: binance_book=23314, binance=4853, coinbase=1670, chainlink=518
+09:20:09 ticks so far: binance_book=24351, binance=5376, coinbase=1740, chainlink=528
+09:20:19 ticks so far: binance_book=24816, binance=5427, coinbase=1771, chainlink=538
+09:20:29 ticks so far: binance_book=25476, binance=5455, coinbase=1815, chainlink=548
+09:20:39 ticks so far: binance_book=26089, binance=5579, coinbase=1836, chainlink=558
+09:20:49 ticks so far: binance_book=26199, binance=5591, coinbase=1862, chainlink=568
+09:20:59 ticks so far: binance_book=26418, binance=5620, coinbase=1895, chainlink=578
+09:21:09 ticks so far: binance_book=26981, binance=5667, coinbase=1932, chainlink=588
+09:21:19 ticks so far: binance_book=27296, binance=5699, coinbase=1961, chainlink=598
+09:21:29 ticks so far: binance_book=27643, binance=5733, coinbase=1995, chainlink=608
+09:21:39 ticks so far: binance_book=28023, binance=5766, coinbase=2025, chainlink=618
+09:21:49 ticks so far: binance_book=28542, binance=5824, coinbase=2053, chainlink=628
+09:21:59 ticks so far: binance_book=28792, binance=5842, coinbase=2082, chainlink=638
+09:22:09 ticks so far: binance_book=29537, binance=6047, coinbase=2108, chainlink=649
+09:22:19 ticks so far: binance_book=30214, binance=6372, coinbase=2149, chainlink=658
+09:22:29 ticks so far: binance_book=30347, binance=6392, coinbase=2176, chainlink=668
+09:22:39 ticks so far: binance_book=30723, binance=6414, coinbase=2204, chainlink=678
+09:22:49 ticks so far: binance_book=30926, binance=6430, coinbase=2248, chainlink=681
+09:22:59 ticks so far: binance_book=31163, binance=6459, coinbase=2276, chainlink=692
+09:23:09 ticks so far: binance_book=31743, binance=6497, coinbase=2312, chainlink=701
+09:23:19 ticks so far: binance_book=32744, binance=6796, coinbase=2350, chainlink=711
+09:23:29 ticks so far: binance_book=33567, binance=7047, coinbase=2375, chainlink=721
+09:23:39 ticks so far: binance_book=34236, binance=7327, coinbase=2402, chainlink=731
+09:23:49 ticks so far: binance_book=36647, binance=8656, coinbase=2457, chainlink=741
+09:23:59 ticks so far: binance_book=37313, binance=8676, coinbase=2486, chainlink=751
+09:24:09 ticks so far: binance_book=38161, binance=8843, coinbase=2524, chainlink=761
+09:24:19 ticks so far: binance_book=38418, binance=8876, coinbase=2551, chainlink=771
+09:24:29 ticks so far: binance_book=38544, binance=8909, coinbase=2575, chainlink=781
+09:24:39 ticks so far: binance_book=38861, binance=8955, coinbase=2600, chainlink=791
+09:24:49 ticks so far: binance_book=39423, binance=8988, coinbase=2633, chainlink=801
+09:24:59 ticks so far: binance_book=39602, binance=9012, coinbase=2664, chainlink=811
+09:25:09 ticks so far: binance_book=39970, binance=9048, coinbase=2690, chainlink=821
+09:25:19 ticks so far: binance_book=40167, binance=9072, coinbase=2731, chainlink=831
+09:25:29 ticks so far: binance_book=40958, binance=9354, coinbase=2771, chainlink=841
+09:25:39 ticks so far: binance_book=43042, binance=9920, coinbase=2929, chainlink=852
+09:25:49 ticks so far: binance_book=44019, binance=10036, coinbase=2965, chainlink=861
+09:25:59 ticks so far: binance_book=44497, binance=10049, coinbase=2995, chainlink=871
+09:26:09 ticks so far: binance_book=45647, binance=10427, coinbase=3035, chainlink=881
+09:26:18 ticks so far: binance_book=46595, binance=10622, coinbase=3088, chainlink=891
+09:26:29 sample binance_book: {"stream":"btcusdt@bookTicker","data":{"u":101815402971,"s":"BTCUSDT","b":"81779.49000000","B":"2.39149000","a":"81779.50000000","A":"9.72109000"}}
+09:26:29 sample binance: {"stream":"btcusdt@trade","data":{"e":"trade","E":1792746679900,"s":"BTCUSDT","t":6786406977,"p":"81779.50000000","q":"0.00293000","T":1792746679899,"m":false,"M":true}}
+09:26:29 sample coinbase: {"type":"last_match","trade_id":1109714397,"maker_order_id":"e84d8b71-a89d-487d-b6ea-870732ebfc8c","taker_order_id":"06840b6f-f14d-4d03-9be1-bc18275f166c","side":"buy","size":"0.00000013","price":"816
+09:26:29 sample chainlink: {"connection_id":"gebGpM5AfWeIKEjtuA==","payload":{"full_accuracy_value":"81670280334199605000000","symbol":"btc/usd","timestamp":1792746679000,"value":81670.2803341996},"timestamp":1792746680671,"top
+09:26:29 chainlink: 6235 non-price/ignored messages
+09:26:29 coinbase: 2 non-price/ignored messages
+09:26:29 raw ticks saved to ./feed_ticks_20261023_091115.csv
+
+==============================================================================
+SETUP
+==============================================================================
+local clock offset vs time.cloudflare.com: +0.6 ms (SNTP delay 1.2 ms)
+host                              ip                 tcp min  tcp med  (ms; ~1 round trip to the EDGE, not necessarily the origin)
+stream.binance.com                175.41.209.97        197.7    201.4
+ws-feed.exchange.coinbase.com     104.18.36.178          0.9      1.0
+ws-live-data.polymarket.com       104.18.34.205          0.9      1.1
+
+==============================================================================
+FEED STATS
+==============================================================================
+source           ticks  ticks/s  gap med  gap p95  age p10  age med  age p90   (ms)
+binance_book     46595     51.8      0.7    109.1        -        -        -
+binance          10622     11.8      0.0    581.3      104      105      107
+coinbase          3088      3.4    182.0    972.1       46       47       54
+chainlink          891      1.0   1082.0   1491.8     1032     1330     1680
+chainlink relay age (Polymarket send-time -> here): med 276 ms, p10 180, p90 385
+age = local receive time (SNTP-corrected) minus the venue's own timestamp. Treat as 
+indicative: it is only as accurate as the clock offset, and venues stamp at different stages.
+
+==============================================================================
+LEAD/LAG BY CROSS-CORRELATION  (grid 10 ms; price change over >= 200 ms,
+widened automatically for slow feeds such as Chainlink)
+==============================================================================
+Positive = second feed shows moves LATER than the first. Fast feeds: roughly +-10-20 ms.
+Slow feeds (1 update/s): treat as rough; the spike race below is the better number.
+      binance is      0 ms LATER than   binance_book  (r=1.00, win 200 ms; 1st half +0, 2nd half +0)
+     coinbase is     40 ms LATER than   binance_book  (r=0.32, win 200 ms; 1st half +123, 2nd half +41)
+    chainlink is   2000 ms LATER than   binance_book  (r=0.69, win 1000 ms; 1st half +2000, 2nd half +2000)
+     coinbase is     39 ms LATER than   binance       (r=0.33, win 200 ms; 1st half +120, 2nd half +39)
+    chainlink is   2000 ms LATER than   binance       (r=0.69, win 1000 ms; 1st half +2000, 2nd half +2000)
+    chainlink is   2000 ms LATER than   coinbase      (r=0.59, win 1000 ms; 1st half +1944, 2nd half +2000)
+
+==============================================================================
+SPIKE RACE  (>= 0.5 bps within 1000 ms; same-spike match window 2000 ms)
+==============================================================================
+events per feed: binance_book=32, binance=29, coinbase=61, chainlink=23
+spikes seen by >=1 feed: 78, by >=2 feeds: 33
+
+source           seen   first  lag med  lag p25  lag p75   (ms behind the first feed to fire)
+binance_book       32     53%        0        0        1
+binance            29     28%        1        0       97
+coinbase           25     28%      143        0      487
+chainlink          14      7%     1416      681     1868
+missed spikes (others fired, this feed never did within the window): binance_book=1, binance=4, coinbase=8, chainlink=19
+
+head-to-head (only spikes both feeds saw):
+   binance_book vs binance       n= 29  binance_book fires first by median 1 ms  (IQR -0..+2; binance_book first in 45%)
+   binance_book vs coinbase      n= 24  binance_book fires first by median 147 ms  (IQR -11..+503; binance_book first in 25%)
+   binance_book vs chainlink     n= 13  binance_book fires first by median 1794 ms  (IQR +719..+1869; binance_book first in 8%)
+        binance vs coinbase      n= 24  binance fires first by median 147 ms  (IQR -12..+502; binance first in 25%)
+        binance vs chainlink     n= 10  binance fires first by median 1794 ms  (IQR +478..+1868; binance first in 10%)
+       coinbase vs chainlink     n=  8  coinbase fires first by median 1365 ms  (IQR +960..+1719; coinbase first in 0%)
+ranking by median lag: binance_book (0 ms) < binance (1 ms) < coinbase (143 ms) < chainlink (1416 ms)
+
+==============================================================================
+SPIKE RACE  (>= 1 bps within 1000 ms; same-spike match window 2000 ms)
+==============================================================================
+events per feed: binance_book=17, binance=15, coinbase=23, chainlink=10
+spikes seen by >=1 feed: 36, by >=2 feeds: 16
+
+source           seen   first  lag med  lag p25  lag p75   (ms behind the first feed to fire)
+binance_book       15     73%        0        0        0
+binance            15     13%        1        1        5
+coinbase           10     20%       91        6      391
+chainlink           5     20%     1768      821     1946
+missed spikes (others fired, this feed never did within the window): binance_book=1, binance=1, coinbase=6, chainlink=11
+
+head-to-head (only spikes both feeds saw):
+   binance_book vs binance       n= 15  binance_book fires first by median 1 ms  (IQR +0..+2; binance_book first in 27%)
+   binance_book vs coinbase      n=  9  binance_book fires first by median 138 ms  (IQR +24..+470; binance_book first in 11%)
+        binance vs coinbase      n=  9  binance fires first by median 138 ms  (IQR +23..+469; binance first in 11%)
+ranking by median lag: binance_book (0 ms) < binance (1 ms) < coinbase (91 ms) < chainlink (1768 ms)
+
+==============================================================================
+SPIKE RACE  (>= 2 bps within 1000 ms; same-spike match window 2000 ms)
+==============================================================================
+events per feed: binance_book=1, binance=1, coinbase=7, chainlink=1
+spikes seen by >=1 feed: 8, by >=2 feeds: 1
+!! fewer than 15 matched spikes: results are noisy. Run longer or lower --spike-bps.
+
+source           seen   first  lag med  lag p25  lag p75   (ms behind the first feed to fire)
+binance_book        1      0%        0        0        0
+binance             1    100%        0        0        0
+coinbase            1      0%      256      256      256
+chainlink           0
+missed spikes (others fired, this feed never did within the window): binance_book=0, binance=0, coinbase=0, chainlink=1
+
+head-to-head (only spikes both feeds saw):
+ranking by median lag: binance (0 ms) < binance_book (0 ms) < coinbase (256 ms)
+
+==============================================================================
+HOW TO READ THIS
+==============================================================================
+* Spike race + cross-correlation already contain network + venue reaction + feed delay,
+  because every arrival is stamped on your VPS clock. That is the 'net speed'.
+* A feed 50 ms closer but 51 ms slower to react shows up as +1 ms here. Nothing to add up.
+* Chainlink being hundreds of ms behind is expected: it aggregates several venues first.
+  It matters because the 5-min markets RESOLVE on it, not because it is a fast signal.
+* Run for several minutes, ideally during busy hours, and repeat at a different time.
+09:26:31 report saved to ./feed_report_20261023_091115.txt

@@ -130,6 +130,8 @@ scripts/maker_latency_test.py  N post-only $0.05 orders + cancels: round trips a
 scripts/fast_value_live.py   server: create bot fast-value-live (fast-value's settings) / arm / disarm (mode live|paper)
 deploy/install.sh            Linux server: install/update systemd services (server, recorder, one unit per bot)
 deploy/systemd/              pmtool-server, pmtool-recorder, pmtool-bot@<id> unit files
+TRADER_RE_PLAN.md            reference (suggestions only) for re-doing the CrouchPredictions / machinelearned study:
+                             how to collect each data source, analysis options, bot-building options
 archive/v1-2026-10-21/       old Streamlit code, raw v1 files (profiles/, bot_data/, legacy data/) — read-only
 .tools/node/                 portable Node.js 24 (UI build only)
 run_app.bat                  launcher
@@ -179,7 +181,7 @@ WAL mode; every process/thread opens its own connection via `db.conn()`. Schema 
 | `bot_fills` | id; (bot_id, account, ts) | bot process | every (paper) fill incl. maker/taker, rebate, markout. Sells (fast_player scalp) have negative `shares` and `usd` (= net cash received) |
 | `bot_windows` | (bot_id, account, slug) | bot process | per-window settlement record (`data` JSON), upserted until official |
 | `bot_equity` | (bot_id, account, ts) | bot process | portfolio value every 30 s (PnL chart) |
-| `bot_changes` | id; (bot_id, ts) | registry.add_change (create, control.save_config, control.reset, notes) | per-bot history: created / rebuilt / audit / simulator / settings / account / note; shown in "About this bot" at the bottom of the bot page |
+| `bot_changes` | id; (bot_id, ts) | registry.add_change (create, control.save_config, control.reset, control.reset_day, notes) | per-bot history: created / rebuilt / audit / simulator / settings / account / daily_reset / note; shown in "About this bot" at the bottom of the bot page. The engine restores today's latest `daily_reset` on restart (daily loss counts from the equity at that moment) |
 | `live_orders` | order_id | trading/gateway.py | every order sent from this app (origin=manual or bot id), latency, errors |
 | `live_trades` | id | trading/gateway.py | our fills from the CLOB user channel |
 
@@ -192,11 +194,11 @@ WAL mode; every process/thread opens its own connection via `db.conn()`. Schema 
 | `data/traders/<id>/analysis/` | `summary.json`, `report.md`, `windows.csv`, `timing/price/hourly/daily/edge_deciles.csv`, `buys.parquet` | regenerated each analysis; `buys.parquet` sorted by slug, 20k-row groups |
 | `data/traders/<id>/last_job.log` | last job log | |
 | `data/bots/<id>/state.json` | live snapshot, 2×/s | read by API `/api/bots/<id>/state` |
-| `data/bots/<id>/control.json` | commands to the bot | `{"id", "action": stop/reset/config}` |
+| `data/bots/<id>/control.json` | commands to the bot | `{"id", "action": stop/reset/reset_day/config}` |
 | `data/bots/<id>/bot.pid`, `bot.log` | process id / output | errors are written here (one line per kind per 30 s) |
 | `data/cache/resolutions.json` | market slug → winner | shared by traders |
 | `data/cache/klines/<SYMBOL>/<day>.csv` | Binance 1 s closes per UTC day | shared by traders |
-| `data/recordings/<YYYY-MM-DD>/<HH>.tsv.gz` | raw feeds, one line `recv_ms<TAB>source<TAB>message` (source cb, bn, bf = Binance futures aggTrade (bookTicker 14:32-14:40Z on 10-22), kr, cl, act, info, bk:<slug>) | written by backend/recorder.py (~4 GB/day, 7 days kept; one gzip member per recorder start, closed on SIGTERM); read by bots/replay.py (`_gz_lines` also recovers hours where a killed recorder left a member unterminated) |
+| `data/recordings/<YYYY-MM-DD>/<HH>.tsv.gz` | raw feeds, one line `recv_ms<TAB>source<TAB>message` (source cb = Coinbase ticker, or `matches` messages when Coinbase refused the ticker, bn, bf = Binance futures aggTrade (bookTicker 14:32-14:40Z on 10-22), kr, cl, act, info, bk:<slug>) | written by backend/recorder.py (~4 GB/day, 7 days kept; one gzip member per recorder start, closed on SIGTERM); read by bots/replay.py (`_gz_lines` also recovers hours where a killed recorder left a member unterminated) |
 | `data/recordings/recorder.log` | recorder output | |
 | `data/import/btc5m/` | the old logger PC's export (2026-10-19..22, 64 h): `INVENTORY.md` (read first), `raw_db/btc5m.db` (all feeds, its paper bots, windows), `bot_dbs/` (its live bots), `code/` (old project + analysis, `analysis/data/*.pkl` need pandas >= 3), `extracts/` | read-only input |
 | `data/import/btc5m/recordings_{home,dublin}/` | that data converted to the recorder format by scripts/import_btc5m.py | replay with `--dir` |
@@ -237,7 +239,7 @@ the home PC are separate.
 | `GET /api/strategies`, `GET/POST /api/bots`, `GET/PATCH/DELETE /api/bots/{id}` | bots (list includes `spark`: current account's value, last 7 days, ≤168 points; plus bankroll, fills/maker/taker, volume, fees, windows_done/won from state.json, summed by the Bots page totals strip; `live` = the live account summary for live bots, shown on the card instead of the paper twin; their `spark` is the live settled PnL; the totals strip leaves live bots out) |
 | `GET /api/bots/{id}/state`, `/equity`, `/history`, `/latency` | bot data |
 | `GET/POST /api/bots/{id}/changes` | strategy description + bot history / add a note |
-| `POST /api/bots/{id}/start`, `/stop`, `/reset`, `PUT .../config` | bot control |
+| `POST /api/bots/{id}/start`, `/stop`, `/reset`, `/reset-day`, `PUT .../config` | bot control (`reset-day`: clear today's loss for the daily loss limit, fast_player only) |
 | `GET /api/trade/status`, `/markets`, `/account`, `/history`, `/price-to-beat/{slug}` | live account |
 | `POST /api/trade/arm`, `/order`, `/cancel-all`, `DELETE /api/trade/order/{id}` | trading (REST mirror) |
 | `POST /api/trade/setup-approvals` | send missing wallet approvals (on-chain, gasless) — UI button only |
@@ -284,6 +286,13 @@ the home PC are separate.
 * Trader data: data-api timestamps are block time (~1 s after the match); `/trades?user=&takerOnly=true` lists
   only a wallet's taker fills (diff against activity = maker fills).
 * Trader PnL = cash flows + final resolution; fees/rebates excluded.
+* Coinbase allows ~10 BTC-USD `ticker` subscriptions per IP; on the server every bot + the recorder takes one. A refused
+  subscription gets an error message and then silence: the engine (`market_maker._coinbase`) and the recorder switch to
+  the `matches` channel (same trades; bid/ask rebuilt from the maker side). Diagnostics shows "connected (matches)".
+* Daily loss limit (fast_player `max_daily_loss_frac` × bankroll, from the value at local midnight): once passed, no new
+  entries until midnight (signal result `daily_loss`). The bot page shows a banner and a "Reset daily limit" button.
+* The CLOB ends an HTTP/2 connection after 10,000 requests (GOAWAY, last_stream_id 19999); the gateway keep-alive
+  reconnects at once and counts it (`reconnects`) instead of logging an error.
 
 ## 10. How to add things
 * **New bot strategy:** easiest = subclass `PaperBot` (see `ml_maker.py`): set `CONFIG` (a `BotConfig`

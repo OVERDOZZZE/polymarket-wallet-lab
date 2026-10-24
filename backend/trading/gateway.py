@@ -67,6 +67,7 @@ class Gateway:
         self.subscribers = set()                          # asyncio.Queue per connected browser
         self.loop = None
         self.errors = collections.deque(maxlen=20)
+        self.reconnects = 0                               # CLOB HTTP/2 connections recycled (see _keepalive)
         self.light = False                                # bot process: poll USDC only (no token balances/positions)
 
     # ------------------------------------------------------------------ lifecycle
@@ -106,13 +107,23 @@ class Gateway:
         self.refresh_approvals()
 
     def _keepalive(self):
+        """The CLOB ends an HTTP/2 connection after 10,000 requests (GOAWAY, last_stream_id 19999) or when idle
+        ("Server disconnected"); the call that hits it fails. Reconnect at once so the next order finds a warm
+        connection, instead of paying a TLS handshake. Only a failed reconnect is an error."""
         while True:
             t0 = time.perf_counter()
             try:
                 self.client.get_closed_only_mode()            # cheap authenticated CLOB call
                 self.rtt.append((time.perf_counter() - t0) * 1000)
             except Exception as e:
-                self._err(f"keepalive: {e}")
+                if not _conn_dropped(e):
+                    self._err(f"keepalive: {e}")
+                else:
+                    self.reconnects += 1
+                    try:
+                        self.client.get_closed_only_mode()
+                    except Exception as e2:
+                        self._err(f"keepalive reconnect: {e2}")
             time.sleep(KEEPALIVE_S)
 
     def _poller(self):
@@ -457,7 +468,7 @@ class Gateway:
                 "token_balances": self.token_balances, "user_ws": self.user_ws,
                 "rtt_ms": {"p50": pct(list(self.rtt), .5), "p90": pct(list(self.rtt), .9), "last": self.rtt[-1] if self.rtt else None},
                 "order_ms": {"p50": pct(list(self.order_lat), .5), "last": self.order_lat[-1] if self.order_lat else None},
-                "warm_tokens": len(self.warm), "errors": list(self.errors)[-8:]}
+                "warm_tokens": len(self.warm), "reconnects": self.reconnects, "errors": list(self.errors)[-8:]}
 
 
 def _floor2(x):
@@ -470,6 +481,12 @@ def _api_error(e):
         if v:
             return v if isinstance(v, str) else json.dumps(v, default=str)
     return f"{type(e).__name__}: {e}"[:300]
+
+
+def _conn_dropped(e):
+    """The SDK's TransportError over httpx's RemoteProtocolError: the server closed the connection under us."""
+    import httpx
+    return isinstance(e.__cause__, httpx.RemoteProtocolError)
 
 
 gateway = Gateway()

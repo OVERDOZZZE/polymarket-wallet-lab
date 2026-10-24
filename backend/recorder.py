@@ -93,8 +93,9 @@ class Writer(threading.Thread):
 W = Writer()
 
 
-async def stream(url, src, subscribe=None, ping=None, keep=None, until=None):
-    """Reconnecting websocket -> writer. `keep(raw)` filters, `until()` ends it."""
+async def stream(url, src, subscribe=None, ping=None, keep=None, until=None, refused=None):
+    """Reconnecting websocket -> writer. `keep(raw)` filters, `until()` ends it. `refused` = (text, subscribe):
+    a message containing `text` means the subscription was refused; send the fallback `subscribe` instead."""
     import websockets
     backoff = 0.2
     while until is None or not until():
@@ -107,6 +108,11 @@ async def stream(url, src, subscribe=None, ping=None, keep=None, until=None):
                 while until is None or not until():
                     try:
                         raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                        if refused and refused[0] in (raw if isinstance(raw, str) else raw.decode("utf-8", "replace")):
+                            print(f"{time.strftime('%H:%M:%S')} {src}: refused ({refused[0]}); fallback "
+                                  f"{json.dumps(refused[1])}", flush=True)
+                            await ws.send(json.dumps(refused[1]))
+                            continue
                         if keep is None or keep(raw):
                             W.put(src, raw)
                     except asyncio.TimeoutError:
@@ -171,7 +177,10 @@ async def main():
                {"topic": "crypto_prices_chainlink", "type": "*", "filters": json.dumps({"symbol": "btc/usd"})}]
     jobs = [
         books(),
-        stream(COINBASE_WS, "cb", {"type": "subscribe", "product_ids": ["BTC-USD"], "channels": ["ticker"]}),
+        # Coinbase allows ~10 ticker subscriptions per product per IP (the bots take the rest): then the trades
+        stream(COINBASE_WS, "cb", {"type": "subscribe", "product_ids": ["BTC-USD"], "channels": ["ticker"]},
+               refused=("subscription limit reached for channel: ticker",
+                        {"type": "subscribe", "product_ids": ["BTC-USD"], "channels": ["matches"]})),
         stream(BINANCE_WS, "bn"),
         stream(BINANCE_FUT_WS, "bf"),
         stream(KRAKEN_WS, "kr", {"method": "subscribe", "params": {"channel": "ticker", "symbol": ["BTC/USD"],

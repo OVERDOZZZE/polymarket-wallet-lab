@@ -3,7 +3,7 @@
 Each bot runs in its own high-priority process (python -m backend.bots.runner <bot_id>) so nothing in the
 server (page requests, analysis jobs, the trade gateway) competes with its feed handlers. Per bot:
   data/bots/<id>/state.json    live snapshot, rewritten twice a second by the bot
-  data/bots/<id>/control.json  commands to the bot: {"id", "action": stop|reset|config, ...}
+  data/bots/<id>/control.json  commands to the bot: {"id", "action": stop|reset|reset_day|config, ...}
   data/bots/<id>/bot.pid       process id while running
   data/bots/<id>/bot.log       process output
 """
@@ -99,6 +99,21 @@ def reset(bot_id, bankroll=None):
     from .strategies.market_maker import new_account
     new_account(bot_id, bankroll if bankroll is not None else bot["config"].get("bankroll", 1000.0))
     (bot_dir(bot_id) / "state.json").unlink(missing_ok=True)
+
+
+def reset_day(bot_id):
+    """Clear today's loss so the daily loss limit counts from the current value (the bot trades again). Logged in
+    the bot's history; the engine restores it from that entry after a restart."""
+    cfg_cls = registry.strategy(registry.get_bot(bot_id)["strategy"])[1]
+    if not hasattr(cfg_cls, "max_daily_loss_frac"):
+        raise ValueError("this strategy has no daily loss limit")
+    s = read_state(bot_id) or {}
+    dl = (s.get("account") or {}).get("daily_limit") or {}
+    lost = f" (${dl['lost']:,.2f} lost today)" if dl.get("lost") else ""
+    registry.add_change(bot_id, f"Daily loss limit reset{lost}: today's loss now counts from the current value.",
+                        "daily_reset")
+    if pid_alive(pid(bot_id)):
+        send(bot_id, "reset_day")
 
 
 def equity(bot_id, account=None, since=0.0, max_points=2000):

@@ -23,7 +23,7 @@ export default function BotPage() {
   const st = usePoll<any>(`/api/bots/${id}/state`, 1000, [id]);
   const eq = usePoll<any>(`/api/bots/${id}/equity`, 30000, [id]);
   const [pick, setSec] = useState<Section | "">("");
-  const [dlg, setDlg] = useState<"" | "settings" | "reset">("");
+  const [dlg, setDlg] = useState<"" | "settings" | "reset" | "reset-day">("");
   const [busy, setBusy] = useState(false);
   const s = st.data?.state;
   const running = !!st.data?.running;
@@ -41,6 +41,7 @@ export default function BotPage() {
                        "Open orders": (s.orders || []).filter((o: any) => o.status !== "cancelling").length } : {};
   const tabs = (s?.live ? LIVE_SECTIONS : PAPER_SECTIONS).filter((x) => x !== "Signals" || s?.signals);
   const sec = pick && tabs.includes(pick) ? pick : tabs[0];
+  const dl = s?.account?.daily_limit;
   return (
     <div className="page">
       <div className="page-head">
@@ -54,8 +55,10 @@ export default function BotPage() {
           ? <button className="btn" disabled={busy} onClick={() => act("stop", "Bot stopped")}>Stop</button>
           : <button className="btn primary" disabled={busy || !b} onClick={() => act("start", "Bot started")}>{busy ? "Starting…" : "Start bot"}</button>}
         <button className="btn" disabled={!b} onClick={() => setDlg("settings")}>Settings</button>
+        {dl && <button className="btn" disabled={!dl.lost} title={dl.lost ? "Count today's loss from now on" : "Nothing lost today"} onClick={() => setDlg("reset-day")}>Reset daily limit</button>}
         <button className="btn ghost" disabled={!b} onClick={() => setDlg("reset")}>New account</button>
       </div>
+      {dl?.hit && <DailyLimitBanner dl={dl} live={!!s?.live} onReset={() => setDlg("reset-day")} />}
 
       {!s || !s.account ? (
         <Empty title="Bot not started yet">Press Start bot. It gets a paper balance, streams Coinbase, Chainlink and the current BTC windows' order books, and trades them on paper in its own process, so it keeps going while you use other pages or close the browser.</Empty>
@@ -81,7 +84,44 @@ export default function BotPage() {
       <AboutBot id={id} />
       {dlg === "settings" && b && <BotSettings bot={{ ...b, running }} onClose={() => { setDlg(""); bot.reload(); }} />}
       {dlg === "reset" && b && <ResetDialog bot={b} onClose={() => { setDlg(""); bot.reload(); st.reload(); }} />}
+      {dlg === "reset-day" && dl && <ResetDayDialog id={id} dl={dl} live={!!s?.live} onClose={() => { setDlg(""); st.reload(); }} />}
     </div>
+  );
+}
+
+// fast_player bots: today's loss past max_daily_loss_frac × bankroll stops new entries until local midnight
+function DailyLimitBanner({ dl, live, onReset }: { dl: any; live: boolean; onReset: () => void }) {
+  const now = useNow(30000), wait = Math.max(0, dl.resets_at - now);
+  return (
+    <div className="alert err" style={{ marginBottom: 14, alignItems: "center" }}>
+      <span style={{ flex: 1 }}>
+        <b>Daily loss limit reached{dl.hit_at ? ` at ${hm(dl.hit_at)}` : ""}: no new entries.</b> Lost {money(dl.lost, 2)} today, limit {money(dl.limit, 0)}.
+        {" "}Trading resumes at {hm(dl.resets_at)} (in {Math.floor(wait / 3600)}h {Math.floor((wait % 3600) / 60)}m){live ? "; live orders follow the paper twin, so they are stopped too" : ""}.
+      </span>
+      <button className="btn sm" onClick={onReset}>Reset daily limit</button>
+    </div>
+  );
+}
+
+function DailyLimitRow({ dl }: { dl: any }) {
+  if (!dl) return null;
+  return <>
+    <span className="l">Daily loss limit</span>
+    <span className={`v ${dl.hit ? "dn" : ""}`} style={!dl.hit && dl.lost > dl.limit * 0.75 ? { color: "var(--warn)" } : undefined}>{dl.hit ? "Reached · " : ""}{money(dl.lost, 2)} of {money(dl.limit, 0)} used</span>
+  </>;
+}
+
+function ResetDayDialog({ id, dl, live, onClose }: { id: string; dl: any; live: boolean; onClose: () => void }) {
+  async function go() {
+    try { await api.post(`/api/bots/${id}/reset-day`); toast("Daily loss limit reset", "ok"); onClose(); }
+    catch (e: any) { toast(e.message, "err"); }
+  }
+  return (
+    <Modal title="Reset the daily loss limit?" onClose={onClose}
+           sub={`Today's loss (${money(dl.lost, 2)}) is cleared: the bot may lose another ${money(dl.limit, 0)} before midnight. Logged in the bot's history.`}
+           footer={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" onClick={go}>Reset limit</button></>}>
+      {live && <p className="hint dn">This is a live bot: its real orders follow the paper twin, so resetting starts real-money trading again (the live loss limit still applies).</p>}
+    </Modal>
   );
 }
 
@@ -103,6 +143,7 @@ function ProfileCard({ s, running, b }: { s: any; running: boolean; b: any }) {
       </div>
       <div className="pm-rows">
         <span className="l">PnL today</span><span className={`v ${tone(a.pnl_today)}`}>{signed(a.pnl_today)}</span>
+        <DailyLimitRow dl={a.daily_limit} />
         <span className="l">Total PnL</span><span className={`v ${tone(a.pnl_total)}`}>{signed(a.pnl_total)} <span className="muted" style={{ fontWeight: 500 }}>({num((a.pnl_total / a.bankroll) * 100, 2, true)}%)</span></span>
         <span className="l">In open orders</span><span className="v">{money(a.reserved, 2)}</span>
         <span className="l">Volume</span><span className="v">{money(t.volume)}</span>
@@ -178,6 +219,7 @@ function LiveProfileCard({ s, running, b }: { s: any; running: boolean; b: any }
       </div>
       <div className="pm-rows">
         <span className="l">Loss limit left</span><span className={`v ${L.room < 5 ? "dn" : ""}`}>{money(Math.max(0, L.room), 2)} of {money(L.loss_limit, 0)} <span className="muted small">(open $ counts as lost)</span></span>
+        {a.daily_limit && <><span className="l">Paper twin daily limit</span><span className={`v ${a.daily_limit.hit ? "dn" : ""}`}>{a.daily_limit.hit ? "Reached: no live orders · " : ""}{money(a.daily_limit.lost, 2)} of {money(a.daily_limit.limit, 0)} used</span></>}
         <span className="l">Live windows won</span><span className="v">{L.windows_done ? `${L.windows_won}/${L.windows_done}` : "–"}</span>
         <span className="l">Spent live</span><span className="v">{money(L.spent, 2)}</span>
         <span className="l">Live orders filled</span><span className="v">{L.sent ? `${L.filled}/${L.sent}` : "–"}{L.missed ? <span className="muted small"> · {L.missed} missed</span> : null}{L.rejected ? <span className="dn small"> · {L.rejected} rejected</span> : null}</span>
@@ -263,6 +305,7 @@ function LiveAccount({ L }: { L: any }) {
   return (
     <div className="col">
       {(L.gw_errors || []).length > 0 && <p className="hint dn">{L.gw_errors.map((e: any) => `${hm(e[0])} ${e[1]}`).join(" · ")}</p>}
+      {L.gw_reconnects > 0 && <p className="hint">CLOB connection recycled by Polymarket {L.gw_reconnects}× (every 10,000 requests); reconnected at once each time.</p>}
       <div className="card flush">
         <div className="t2" style={{ padding: "10px 14px" }}>Live orders</div>
         {!log.length ? <Empty title="No live orders yet">Each paper entry also sends a real order of paper $ × {L.scale}.</Empty> : (
@@ -490,8 +533,9 @@ function Diagnostics({ s, running, id }: { s: any; running: boolean; id: string 
       <div className="row wrap">
         {feeds.map(([name, key, warn]) => {
           const p50 = (lat[key] || [null])[0];
-          const ok = stt[key] === "connected" || String(stt[key]).includes("live");
-          return <span key={key} className="chip"><span className="dot" style={{ color: !ok ? "var(--down)" : p50 > warn ? "var(--warn)" : "var(--up)" }} />{name}: {stt[key]}{p50 !== null && p50 !== undefined ? ` · ${Math.round(p50)} ms` : ""}</span>;
+          const ok = String(stt[key]).startsWith("connected") || String(stt[key]).includes("live");
+          const degraded = String(stt[key]).includes("matches");   // Coinbase ticker refused: trades-only fallback
+          return <span key={key} className="chip"><span className="dot" style={{ color: !ok ? "var(--down)" : p50 > warn || degraded ? "var(--warn)" : "var(--up)" }} />{name}: {stt[key]}{p50 !== null && p50 !== undefined ? ` · ${Math.round(p50)} ms` : ""}</span>;
         })}
         <span className="chip">Engine {running ? `running · pid ${s.pid}` : "stopped"}{lat.decide_us ? ` · decision ${Math.round(lat.decide_us[0])} µs` : ""}</span>
         <span className="spacer" />
@@ -533,7 +577,7 @@ function Diagnostics({ s, running, id }: { s: any; running: boolean; id: string 
 }
 
 const KIND: Record<string, string> = { created: "Created", rebuilt: "Rebuilt", audit: "Audit", simulator: "Simulator",
-                                       settings: "Settings", account: "Account", note: "Note" };
+                                       settings: "Settings", account: "Account", note: "Note", daily_reset: "Daily limit" };
 
 // What the bot does and everything that happened to it (created, rebuilt, audited, settings, accounts), newest first.
 function AboutBot({ id }: { id: string }) {

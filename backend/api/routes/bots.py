@@ -152,6 +152,16 @@ def reset(bot_id: str, body: Reset):
     return {"ok": True}
 
 
+@router.post("/bots/{bot_id}/reset-day")
+def reset_day(bot_id: str):
+    _bot(bot_id)
+    try:
+        control.reset_day(bot_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
 class BotPatch(BaseModel):
     name: str | None = None
     notes: str | None = None

@@ -385,7 +385,7 @@ class FastBot(PaperBot):
         if m.strike is not None and m.strike_official is not None and abs(m.strike - m.strike_official) > 1.0:
             return "strike_mismatch"
         eq = self.portfolio_value()
-        if self.day_start_value is not None and eq < self.day_start_value - cfg.max_daily_loss_frac * cfg.bankroll:
+        if self.daily_loss_hit(eq):
             return "daily_loss"
         p_now = self._model(m, now_s)
         if p_now is None:
@@ -740,7 +740,8 @@ class FastBot(PaperBot):
                          "pnl_series": series,
                          "windows": sorted(self.live.values(), key=lambda w: -w["start"])[:60],
                          "log": list(self.live_log)[-100:],
-                         "gw_errors": list(gw.errors)[-5:] if gw else []}
+                         "gw_errors": list(gw.errors)[-5:] if gw else [],
+                         "gw_reconnects": gw.reconnects if gw else 0}
         s["signals"] = list(self.signals)[-150:]
         s["spike"] = None if self.spike is None else {"id": self.spike["id"], "move": self.spike["move"] * 1e4}
         s["exchanges"] = {k: (h[-1][1] if h else None, (now * 1000 - h[-1][0]) if h else None)
