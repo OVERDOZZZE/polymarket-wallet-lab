@@ -120,7 +120,8 @@ frontend/                    React 19 + TypeScript, bundled by esbuild-wasm into
   src/lib/feeds.ts           browser-direct market data: Chainlink/Coinbase/Kraken/Binance + CLOB books
   src/lib/tradeSocket.ts     the /ws/trade client (orders out, account events in, RTT)
   src/components/ui.tsx      Card, Kpis, Strip, Tabs, Seg, Modal, toast, Table, Pill, Chip, Switch, ...
-  src/components/charts.tsx  LineChart (uPlot), Bars (SVG), histogram(), palette C
+  src/components/charts.tsx  LineChart (uPlot; `smooth` overlays movingAvg() of each series: bot + trader P/L charts),
+                             Bars (SVG), histogram(), palette C
   src/components/Sparkline.tsx  small SVG value line for cards (bot cards: portfolio over 7 days)
   src/pages/trade/           TradePage, PriceChart, OrderBook, OrderTicket, AccountPanel, WindowPositions (card under the chart), useTrade, positions (live P/L)
   src/pages/bots/            BotsPage (cards), BotPage (dashboard), BotSettings (config form)
