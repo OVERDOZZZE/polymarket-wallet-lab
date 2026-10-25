@@ -177,7 +177,7 @@ function PnlCard({ s, points }: { s: any; points: [number, number][] }) {
       </div>
       <div className={`big-value ${tone(change)}`}>{signed(change)}</div>
       <div className="muted small" style={{ marginBottom: 8 }}>{RANGE_SUB[rng]}</div>
-      <LineChart x={x} ys={[y]} time height={210} zero legend={false}
+      <LineChart x={x} ys={[y]} time height={210} zero legend={false} smooth
                  series={[{ label: "P/L", color: C.pnl, width: 2.5, fill: "rgba(139,108,246,0.14)", fmt: (v) => signed(v) }]}
                  yFmt={(v) => "$" + v.toFixed(0)} />
     </div>
@@ -257,7 +257,7 @@ function LivePnlCard({ L }: { L: any }) {
       </div>
       <div className={`big-value ${tone(change)}`}>{signed(change)}</div>
       <div className="muted small" style={{ marginBottom: 8 }}>{RANGE_SUB[rng]}{L.at_risk > 0 ? ` · ${money(L.at_risk, 2)} in open windows` : ""}</div>
-      <LineChart x={x} ys={[y]} time height={210} zero legend={false}
+      <LineChart x={x} ys={[y]} time height={210} zero legend={false} smooth
                  series={[{ label: "Live P/L", color: C.pnl, width: 2.5, fill: "rgba(139,108,246,0.14)", fmt: (v) => signed(v) }]}
                  yFmt={(v) => "$" + v.toFixed(0)} />
     </div>

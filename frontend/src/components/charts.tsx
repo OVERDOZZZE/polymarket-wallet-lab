@@ -7,8 +7,22 @@ import "uplot/dist/uPlot.min.css";
 export const C = {
   s1: "#3987e5", s2: "#d95926", s3: "#199e70", s4: "#c98500", s5: "#d55181", s7: "#9085e9",
   up: "#3db468", down: "#e5484d", pnl: "#8b6cf6", muted: "#8c8b85", grid: "rgba(255,255,255,0.06)",
-  axis: "#8c8b85", text: "#ecebe8",
+  axis: "#8c8b85", text: "#ecebe8", avg: "rgba(236,235,232,0.85)",
 };
+
+/** Centred moving average over a time window of `frac` x the x span (uneven x spacing is fine; nulls skipped). */
+export function movingAvg(x: ArrayLike<number>, y: ArrayLike<number | null>, frac = 0.05): (number | null)[] {
+  const n = x.length, out: (number | null)[] = new Array(n).fill(null);
+  const half = n > 2 ? ((x[n - 1] - x[0]) * frac) / 2 : 0;
+  if (half <= 0) return out;
+  let lo = 0, hi = 0, sum = 0, cnt = 0;
+  for (let i = 0; i < n; i++) {
+    for (; hi < n && x[hi] <= x[i] + half; hi++) { const v = y[hi]; if (v !== null && v !== undefined) { sum += v; cnt++; } }
+    for (; x[lo] < x[i] - half; lo++) { const v = y[lo]; if (v !== null && v !== undefined) { sum -= v; cnt--; } }
+    out[i] = cnt ? sum / cnt : null;
+  }
+  return out;
+}
 
 export type LSeries = {
   label: string; color: string; width?: number; fill?: string; points?: boolean; pointSize?: number;
@@ -20,6 +34,8 @@ type Props = {
   time?: boolean; xFmt?: (v: number) => string; yFmt?: (v: number) => string;
   hlines?: { y: number; color: string; label?: string }[]; yRange?: [number, number]; xRange?: [number, number];
   zero?: boolean; legend?: boolean; className?: string; onReady?: (u: uPlot) => void;
+  /** overlay a moving average of every series (true = window of 5% of the x span, or that fraction) */
+  smooth?: boolean | number;
 };
 
 /** Tooltip plugin: crosshair readout at the hovered x. */
@@ -98,7 +114,10 @@ export function LineChart(p: Props) {
   const hl = useRef(p.hlines || []);
   hl.current = p.hlines || [];
   const xFmt = p.xFmt || (p.time ? defaultTimeFmt : (v: number) => String(v));
-  const key = p.series.map((s) => s.label + s.color + (s.show === false)).join("|") + (p.time ? "t" : "n") + (p.yRange || "") + (p.xRange || "");
+  const frac = p.smooth === true ? 0.05 : p.smooth || 0;
+  const series: LSeries[] = frac ? [...p.series, ...p.series.map((s) => ({ label: `${s.label} (avg)`, color: C.avg, width: 1.75, show: s.show, fmt: s.fmt }))] : p.series;
+  const ys = useMemo(() => (frac ? [...p.ys, ...p.ys.map((y) => movingAvg(p.x, y, frac))] : p.ys), [p.x, p.ys, frac]);
+  const key = series.map((s) => s.label + s.color + (s.show === false)).join("|") + (p.time ? "t" : "n") + (p.yRange || "") + (p.xRange || "");
 
   useLayoutEffect(() => {
     const el = ref.current!;
@@ -120,16 +139,16 @@ export function LineChart(p: Props) {
       ],
       series: [
         {},
-        ...p.series.map((s) => ({
+        ...series.map((s) => ({
           label: s.label, stroke: s.color, width: s.width ?? 2, fill: s.fill, show: s.show !== false, dash: s.dash,
           spanGaps: true,
           paths: s.points ? () => null : s.step ? uPlot.paths.stepped!({ align: 1 }) : undefined,
           points: s.points ? { show: true, size: s.pointSize ?? 9, fill: s.color, stroke: "#1e1f23", width: 1.5 } : { show: false },
         })),
       ],
-      plugins: [tooltip(p.series, xFmt), hlinePlugin(() => [...hl.current, ...(p.zero ? [{ y: 0, color: "rgba(140,139,133,.5)" }] : [])])],
+      plugins: [tooltip(series, xFmt), hlinePlugin(() => [...hl.current, ...(p.zero ? [{ y: 0, color: "rgba(140,139,133,.5)" }] : [])])],
     };
-    const u = new uPlot(opts, [Array.from(p.x), ...p.ys.map((y) => Array.from(y))] as any, el);
+    const u = new uPlot(opts, [Array.from(p.x), ...ys.map((y) => Array.from(y))] as any, el);
     plot.current = u;
     p.onReady?.(u);
     const ro = new ResizeObserver(() => u.setSize({ width: el.clientWidth, height: p.height || 280 }));
@@ -139,14 +158,14 @@ export function LineChart(p: Props) {
   }, [key, p.height]);
 
   useEffect(() => {
-    plot.current?.setData([Array.from(p.x), ...p.ys.map((y) => Array.from(y))] as any);
-  }, [p.x, p.ys]);
+    plot.current?.setData([Array.from(p.x), ...ys.map((y) => Array.from(y))] as any);
+  }, [p.x, ys]);
 
   return (
     <div className={p.className}>
-      {p.legend !== false && p.series.length > 1 && (
+      {p.legend !== false && series.length > 1 && (
         <div className="legend" style={{ marginBottom: 6 }}>
-          {p.series.map((s) => <span key={s.label}><span className="sw" style={{ background: s.color }} />{s.label}</span>)}
+          {series.map((s) => <span key={s.label}><span className="sw" style={{ background: s.color }} />{s.label}</span>)}
         </div>
       )}
       <div ref={ref} className="chart" />

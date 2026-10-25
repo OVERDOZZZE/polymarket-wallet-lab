@@ -31,7 +31,7 @@ export function Overview({ t, S }: { t: any; S: any }) {
         { label: "Data check", value: num(S.sanity_ratio, 3), sub: "about 1.000 = history complete", help: "Reconstructed payout divided by actual redeemed cash." },
       ]} />
       <Card title="Cumulative PnL">
-        {pnl?.t?.length ? <LineChart x={pnl.t} ys={[pnl.cum]} time height={320} zero legend={false}
+        {pnl?.t?.length ? <LineChart x={pnl.t} ys={[pnl.cum]} time height={320} zero legend={false} smooth
           series={[{ label: "Cumulative PnL", color: C.s1, fill: "rgba(57,135,229,0.10)", fmt: (v) => money(v) }]} yFmt={(v) => "$" + v.toLocaleString("en-US", { maximumFractionDigits: 0 })} /> : <Empty title="No resolved windows yet" />}
       </Card>
       <div className="grid2" style={{ marginTop: 14 }}>
