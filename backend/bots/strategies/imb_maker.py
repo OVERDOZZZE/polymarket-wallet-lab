@@ -86,6 +86,7 @@ from .market_maker import PaperBot, _pct
 TICK = 10                 # 1 c in thousandths
 LOG_KEEP_DAYS = 30
 BATCH = 15                # orders per POST /orders (Polymarket's limit)
+OTOK_RATE, OTOK_BURST = 30.0, 45.0   # our placements per s / burst: under Polymarket's per-signer 40 / 60
 ORDER_COLS = ("id", "side", "price", "size", "sent_ms", "live_ms", "cancel_ms", "cancel_eff_ms", "filled",
               "queue0", "why")
 FILL_COLS = ("ts_ms", "order", "side", "price", "shares")
@@ -255,6 +256,7 @@ class ImbMakerBot(GuardMakerBot):
         self._lrisk = (0.0, 0.0)                      # (settled live PnL, worst case of open windows)
         self._lprune = 0.0
         self._lrec = {}                               # slug -> when the exchange's open orders are checked next (ms)
+        self._otok, self._otok_ms = float(OTOK_BURST), 0.0    # our own order-placement token bucket
         self.lstat = collections.Counter()
         self.lpost_ms, self.lcancel_ms = deque(maxlen=2000), deque(maxlen=2000)
         if self.mode == "live":
@@ -509,7 +511,7 @@ class ImbMakerBot(GuardMakerBot):
                    (("up", g_up, net > cfg.inv_cap, net >= 0), ("down", g_dn, net < -cfg.inv_cap, net <= 0))}
         else:
             want, why = {"up": {}, "down": {}}, {"up": reason, "down": reason}
-        cancels, places = [], []
+        cancels, by_side = [], {"up": [], "down": []}
         for side in ("up", "down"):
             keep = set()
             for lid in lv["act"]:
@@ -528,10 +530,16 @@ class ImbMakerBot(GuardMakerBot):
             if now >= self._lblock:
                 for px, sz in want[side].items():
                     if px not in keep and now >= lv["backoff"].get((side, px), 0.0):
-                        places.append((side, px, sz))
+                        by_side[side].append((side, px, sz))
         if cancels:
             self._live_cancel(cancels, now)
+        # ladder tops first, Up and Down alternating; within our own order budget (Polymarket: 40/s, burst 60)
+        places = [x for pair in zip(by_side["up"] + [None] * 13, by_side["down"] + [None] * 13) for x in pair if x]
+        self._otok = min(OTOK_BURST, self._otok + (now - self._otok_ms) / 1000.0 * OTOK_RATE)
+        self._otok_ms = now
+        places = places[:int(self._otok)]
         if places:
+            self._otok -= len(places)
             self._live_place(m, lv, places, now)
 
     def _live_block(self, w):

@@ -367,6 +367,7 @@ def live():
     saved = dict(w)
     w.update(up_sh=0.0, down_sh=10.0, up_cost=0.0, down_cost=5.0)
     b.cfg = b.CONFIG.from_dict({**b.cfg.to_dict(), "spend_cap_usd": 1.0})
+    b._otok = 45.0                                     # (virtual time barely moves: refill the order budget)
     at(b, t + 1794)
     b._requote(m, t + 1794, force=True)
     flush()
