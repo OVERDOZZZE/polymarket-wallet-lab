@@ -117,7 +117,10 @@ def add_note(bot_id: str, body: Note):
 @router.post("/bots/{bot_id}/start")
 def start(bot_id: str):
     _bot(bot_id)
-    started = control.start(bot_id)
+    try:
+        started = control.start(bot_id)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
     for _ in range(40):                     # wait until the engine publishes its first state
         s = control.read_state(bot_id)
         if s and s.get("running") and time.time() - s.get("ts", 0) < 2:
@@ -130,6 +133,20 @@ def start(bot_id: str):
 def stop(bot_id: str):
     control.stop(bot_id)
     return {"ok": True}
+
+
+@router.post("/bots/{bot_id}/archive")
+def archive(bot_id: str):
+    _bot(bot_id)
+    control.archive(bot_id)
+    return card(_bot(bot_id))
+
+
+@router.post("/bots/{bot_id}/unarchive")
+def unarchive(bot_id: str):
+    _bot(bot_id)
+    control.unarchive(bot_id)
+    return card(_bot(bot_id))
 
 
 @router.put("/bots/{bot_id}/config")

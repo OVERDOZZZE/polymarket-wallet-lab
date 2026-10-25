@@ -23,7 +23,7 @@ export default function BotPage() {
   const st = usePoll<any>(`/api/bots/${id}/state`, 1000, [id]);
   const eq = usePoll<any>(`/api/bots/${id}/equity`, 30000, [id]);
   const [pick, setSec] = useState<Section | "">("");
-  const [dlg, setDlg] = useState<"" | "settings" | "reset" | "reset-day">("");
+  const [dlg, setDlg] = useState<"" | "settings" | "reset" | "reset-day" | "archive">("");
   const [busy, setBusy] = useState(false);
   const s = st.data?.state;
   const running = !!st.data?.running;
@@ -53,11 +53,18 @@ export default function BotPage() {
         <span className="spacer" />
         {running
           ? <button className="btn" disabled={busy} onClick={() => act("stop", "Bot stopped")}>Stop</button>
-          : <button className="btn primary" disabled={busy || !b} onClick={() => act("start", "Bot started")}>{busy ? "Starting…" : "Start bot"}</button>}
+          : <button className="btn primary" disabled={busy || !b || !!b.archived} onClick={() => act("start", "Bot started")}>{busy ? "Starting…" : "Start bot"}</button>}
         <button className="btn" disabled={!b} onClick={() => setDlg("settings")}>Settings</button>
         {dl && <button className="btn" disabled={!dl.lost} title={dl.lost ? "Count today's loss from now on" : "Nothing lost today"} onClick={() => setDlg("reset-day")}>Reset daily limit</button>}
         <button className="btn ghost" disabled={!b} onClick={() => setDlg("reset")}>New account</button>
+        {b && !b.archived && <button className="btn ghost" title="Stop it and hide it from the Bots page; nothing is deleted" onClick={() => setDlg("archive")}>Archive</button>}
       </div>
+      {b?.archived && (
+        <div className="alert info" style={{ marginBottom: 14, alignItems: "center" }}>
+          <span style={{ flex: 1 }}><b>Archived {dtUTC(b.archived)} UTC.</b> Hidden from the Bots page and kept stopped; all its data is still here.</span>
+          <button className="btn sm" disabled={busy} onClick={() => act("unarchive", "Unarchived (press Start bot to run it)")}>Unarchive</button>
+        </div>
+      )}
       {dl?.hit && <DailyLimitBanner dl={dl} live={!!s?.live} onReset={() => setDlg("reset-day")} />}
 
       {!s || !s.account ? (
@@ -85,7 +92,25 @@ export default function BotPage() {
       {dlg === "settings" && b && <BotSettings bot={{ ...b, running }} onClose={() => { setDlg(""); bot.reload(); }} />}
       {dlg === "reset" && b && <ResetDialog bot={b} onClose={() => { setDlg(""); bot.reload(); st.reload(); }} />}
       {dlg === "reset-day" && dl && <ResetDayDialog id={id} dl={dl} live={!!s?.live} onClose={() => { setDlg(""); st.reload(); }} />}
+      {dlg === "archive" && b && <ArchiveDialog b={b} running={running} live={b.mode === "live"} onClose={() => setDlg("")}
+                                                onDone={() => { setDlg(""); bot.reload(); st.reload(); }} />}
     </div>
+  );
+}
+
+function ArchiveDialog({ b, running, live, onClose, onDone }: { b: any; running: boolean; live: boolean; onClose: () => void; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  async function go() {
+    setBusy(true);
+    try { await api.post(`/api/bots/${b.id}/archive`); toast(`${b.name} archived`, "ok"); onDone(); }
+    catch (e: any) { toast(e.message, "err"); setBusy(false); }
+  }
+  return (
+    <Modal title={`Archive ${b.name}?`} onClose={onClose}
+           sub={`${running ? "It is stopped, then" : "It is"} hidden from the Bots page and its totals. Nothing is deleted: accounts, fills, windows and history stay, and you can unarchive it any time (Bots → Show archived).`}
+           footer={<><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn primary" disabled={busy} onClick={go}>{busy ? "Archiving…" : "Archive"}</button></>}>
+      {live && running && <p className="hint dn">This bot trades real money: archiving stops its live orders.</p>}
+    </Modal>
   );
 }
 
@@ -581,7 +606,8 @@ function Diagnostics({ s, running, id }: { s: any; running: boolean; id: string 
 }
 
 const KIND: Record<string, string> = { created: "Created", rebuilt: "Rebuilt", audit: "Audit", simulator: "Simulator",
-                                       settings: "Settings", account: "Account", note: "Note", daily_reset: "Daily limit" };
+                                       settings: "Settings", account: "Account", note: "Note", daily_reset: "Daily limit",
+                                       archive: "Archive" };
 
 // What the bot does and everything that happened to it (created, rebuilt, audited, settings, accounts), newest first.
 function AboutBot({ id }: { id: string }) {

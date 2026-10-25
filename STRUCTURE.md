@@ -31,7 +31,7 @@ Market data itself (books, ticks) is **not** archived here — a separate PC rec
 | Rebuild UI | `cd frontend && ..\.tools\node\npm.cmd run build` (≈1 s) |
 | UI rebuild on save | `cd frontend && ..\.tools\node\npm.cmd run watch`, then refresh the browser |
 | Type-check UI | `cd frontend && ..\.tools\node\npx.cmd tsc --noEmit` |
-| CLI | `.venv\Scripts\python -m backend.cli -h` (traders, add, update, analyze, live, export, bots, bot start/stop) |
+| CLI | `.venv\Scripts\python -m backend.cli -h` (traders, add, update, analyze, live, export, bots, bot start/stop/archive/unarchive) |
 | One bot by hand | `.venv\Scripts\python -m backend.bots.runner <bot_id>` |
 | Record market data | `.venv\Scripts\python -m backend.recorder` (keep running; replays need it) |
 | Replay bots offline | `.venv\Scripts\python -m backend.bots.replay --hours 6 --bot crouch-v2 --variant crouch_v2:maker_min_edge=0.01` |
@@ -195,7 +195,7 @@ WAL mode; every process/thread opens its own connection via `db.conn()`. Schema 
 |---|---|---|---|
 | `traders` | id | traders/store.py | tracked wallets: name, wallet, asset, window, coverage (JSON), notes, flags |
 | `trader_events` | id | traders/live.py | live-captured trades/redeems of watched traders (`data` = full event JSON) |
-| `bots` | id | bots/registry.py, control.py | strategy, mode (paper/live), config JSON, current `account` number. Bots: `crouch-mm` (market_maker), `ml-copy` (ml_maker; `ml-join` (join_copy) deleted 2026-10-23), `crouch-v2` (crouch_v2), `fast-hold` / `fast-scalp` / `fast-value` and `fast-hold-v2` / `fast-scalp-v2` / `fast-value-v2` (fast_player), `late-fav` (late_fav), `imb-maker` / `imb-maker-300` (imb_maker; $5k B 60 / $300 B 5 cap 25; Dublin since 2026-10-25) (guard_maker bots `guard-mm-5m` / `guard-mm-15m` deleted from the server 2026-10-23) |
+| `bots` | id | bots/registry.py, control.py | strategy, mode (paper/live), config JSON, current `account` number, `archived` (time, else NULL: hidden from the Bots page and its totals, start refused, runner exits 0; column added to old DBs by `db.ADDED_COLUMNS`). Bots: `crouch-mm` (market_maker), `ml-copy` (ml_maker; `ml-join` (join_copy) deleted 2026-10-23), `crouch-v2` (crouch_v2), `fast-hold` / `fast-scalp` / `fast-value` and `fast-hold-v2` / `fast-scalp-v2` / `fast-value-v2` (fast_player), `late-fav` (late_fav), `imb-maker` / `imb-maker-300` (imb_maker; $5k B 60 / $300 B 5 cap 25; Dublin since 2026-10-25) (guard_maker bots `guard-mm-5m` / `guard-mm-15m` deleted from the server 2026-10-23) |
 | `bot_fills` | id; (bot_id, account, ts) | bot process | every (paper) fill incl. maker/taker, rebate, markout. Sells (fast_player scalp) have negative `shares` and `usd` (= net cash received) |
 | `bot_windows` | (bot_id, account, slug) | bot process | per-window settlement record (`data` JSON), upserted until official |
 | `bot_equity` | (bot_id, account, ts) | bot process | portfolio value every 30 s (PnL chart) |
@@ -260,7 +260,7 @@ the home PC are separate.
 | `GET /api/strategies`, `GET/POST /api/bots`, `GET/PATCH/DELETE /api/bots/{id}` | bots (list includes `spark`: current account's value, last 7 days, ≤168 points; plus bankroll, fills/maker/taker, volume, fees, windows_done/won from state.json, summed by the Bots page totals strip; `live` = the live account summary for live bots, shown on the card instead of the paper twin; their `spark` is the live settled PnL; the totals strip leaves live bots out) |
 | `GET /api/bots/{id}/state`, `/equity`, `/history`, `/latency` | bot data |
 | `GET/POST /api/bots/{id}/changes` | strategy description + bot history / add a note |
-| `POST /api/bots/{id}/start`, `/stop`, `/reset`, `/reset-day`, `PUT .../config` | bot control (`reset-day`: clear today's loss for the daily loss limit, fast_player only) |
+| `POST /api/bots/{id}/start`, `/stop`, `/reset`, `/reset-day`, `/archive`, `/unarchive`, `PUT .../config` | bot control (`reset-day`: clear today's loss for the daily loss limit, fast_player only; `archive`: stop + hide, data kept; start of an archived bot -> 409) |
 | `GET /api/trade/status`, `/markets`, `/account`, `/history`, `/price-to-beat/{slug}` | live account |
 | `POST /api/trade/arm`, `/order`, `/cancel-all`, `DELETE /api/trade/order/{id}` | trading (REST mirror) |
 | `POST /api/trade/setup-approvals` | send missing wallet approvals (on-chain, gasless) — UI button only |

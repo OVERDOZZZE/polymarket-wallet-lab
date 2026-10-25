@@ -43,7 +43,8 @@ def is_running(bot_id, state=None):
 
 
 def start(bot_id):
-    registry.get_bot(bot_id)
+    if registry.get_bot(bot_id).get("archived"):
+        raise ValueError("this bot is archived: unarchive it first")
     if pid_alive(pid(bot_id)):
         return False
     d = bot_dir(bot_id)
@@ -99,6 +100,26 @@ def reset(bot_id, bankroll=None):
     from .strategies.market_maker import new_account
     new_account(bot_id, bankroll if bankroll is not None else bot["config"].get("bankroll", 1000.0))
     (bot_dir(bot_id) / "state.json").unlink(missing_ok=True)
+
+
+def archive(bot_id):
+    """Stop the bot and hide it from the Bots page. Nothing is deleted; the runner refuses to start an archived bot,
+    so a systemd unit left enabled on the server exits at once (cleanly, so it is not restarted)."""
+    bot = registry.get_bot(bot_id)
+    if bot.get("archived"):
+        return
+    was = is_running(bot_id)
+    stop(bot_id)
+    db.x("UPDATE bots SET archived = ? WHERE id = ?", (time.time(), bot_id))
+    registry.add_change(bot_id, "Archived" + (" (stopped it)" if was else "") + ": hidden from the Bots page, data kept.",
+                        "archive")
+
+
+def unarchive(bot_id):
+    if not registry.get_bot(bot_id).get("archived"):
+        return
+    db.x("UPDATE bots SET archived = NULL WHERE id = ?", (bot_id,))
+    registry.add_change(bot_id, "Unarchived (not started).", "archive")
 
 
 def reset_day(bot_id):

@@ -20,6 +20,9 @@ def main():
     bot_id, quiet = args[0], "--quiet" in sys.argv
     high_priority()
     row = registry.get_bot(bot_id)
+    if row.get("archived"):                  # exit 0: systemd's Restart=on-failure leaves it stopped
+        print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} bot {bot_id} is archived; not starting", flush=True)
+        return
     engine_cls, _ = registry.strategy(row["strategy"])
     bot = engine_cls(bot_id)
     bot.publish_state = True

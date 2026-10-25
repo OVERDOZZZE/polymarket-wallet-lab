@@ -28,7 +28,7 @@ CREATE INDEX IF NOT EXISTS ix_trader_events ON trader_events (trader_id, recv_ms
 CREATE TABLE IF NOT EXISTS bots (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, strategy TEXT NOT NULL, mode TEXT DEFAULT 'paper',
     config TEXT DEFAULT '{}', account INTEGER DEFAULT 1, account_since REAL, bankroll REAL DEFAULT 1000,
-    created REAL, notes TEXT DEFAULT ''
+    created REAL, notes TEXT DEFAULT '', archived REAL          -- archived: when (hidden + kept stopped), else NULL
 );
 CREATE TABLE IF NOT EXISTS bot_fills (
     id INTEGER PRIMARY KEY, bot_id TEXT NOT NULL, account INTEGER NOT NULL, ts REAL, slug TEXT, win INTEGER,
@@ -62,9 +62,22 @@ CREATE TABLE IF NOT EXISTS live_trades (             -- our fills, from the CLOB
 CREATE INDEX IF NOT EXISTS ix_live_trades_ts ON live_trades (ts);
 """
 
+# columns added after a table was first created (CREATE TABLE IF NOT EXISTS never adds them): (table, column, type)
+ADDED_COLUMNS = [("bots", "archived", "REAL")]
+
 _local = threading.local()
 _init_lock = threading.Lock()
 _initialised = False
+
+
+def _add_columns(c):
+    for table, col, typ in ADDED_COLUMNS:
+        if col not in {r[1] for r in c.execute(f"PRAGMA table_info({table})")}:
+            try:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+            except sqlite3.OperationalError as e:      # another process added it first
+                if "duplicate column" not in str(e):
+                    raise
 
 
 def conn():
@@ -80,6 +93,7 @@ def conn():
         with _init_lock:
             if not _initialised:
                 c.executescript(SCHEMA)
+                _add_columns(c)
                 _initialised = True
         _local.c = c
     return c

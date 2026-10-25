@@ -1,16 +1,18 @@
 // Bots: every bot as a portfolio card; create new ones from a strategy.
-import { useEffect, useRef, useState } from "react";
+import { MouseEvent, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Sparkline } from "../../components/Sparkline";
-import { Empty, Field, LiveBadge, Modal, toast } from "../../components/ui";
+import { Empty, Field, LiveBadge, Modal, Table, toast } from "../../components/ui";
 import { api } from "../../lib/api";
-import { money, pct, signed, tone } from "../../lib/format";
-import { usePoll } from "../../lib/hooks";
+import { dtUTC, money, pct, signed, tone } from "../../lib/format";
+import { usePoll, usePref } from "../../lib/hooks";
 
 export default function BotsPage() {
   const { data, reload } = usePoll<any[]>("/api/bots", 3000);
   const [adding, setAdding] = useState(false);
+  const [showArchived, setShowArchived] = usePref("bots.showArchived", false);
   const nav = useNavigate();
+  const active = (data || []).filter((b) => !b.archived), archived = (data || []).filter((b) => b.archived);
   return (
     <div className="page">
       <div className="page-head">
@@ -21,10 +23,10 @@ export default function BotsPage() {
         <span className="spacer" />
         <button className="btn primary" onClick={() => setAdding(true)}>New bot</button>
       </div>
-      {data && data.length > 0 && <BotTotals bots={data} />}
+      {active.length > 0 && <BotTotals bots={active} />}
       {data && !data.length && <Empty title="No bots yet">Create one from a strategy. It starts on paper with live Polymarket data.</Empty>}
       <div className="grid3">
-        {(data || []).map((b) => (
+        {active.map((b) => (
           <div key={b.id} className="card" style={{ cursor: "pointer" }} onClick={() => nav(`/bots/${b.id}`)}>
             <div className="pm-prof" style={{ marginBottom: 10 }}>
               <div className={`pm-ava ${b.live ? "live" : "b"}`} style={{ width: 46, height: 46 }} />
@@ -56,13 +58,47 @@ export default function BotsPage() {
           </div>
         ))}
       </div>
+      {archived.length > 0 && (
+        <div className="col" style={{ marginTop: 18 }}>
+          <div className="row">
+            <button className="btn ghost sm" onClick={() => setShowArchived(!showArchived)}>
+              {showArchived ? "Hide" : "Show"} archived bots ({archived.length})
+            </button>
+          </div>
+          {showArchived && <ArchivedBots bots={archived} onChange={reload} />}
+        </div>
+      )}
       {adding && <NewBot onClose={() => setAdding(false)} onDone={(id) => { reload(); nav(`/bots/${id}`); }} />}
     </div>
   );
 }
 
-// Totals across every paper bot's current account (stopped bots included: their last state counts). Live bots are
-// left out: their paper twin only sizes real orders and would double-count the paper bot it copies.
+// Archived bots: stopped and kept out of the cards and totals; one compact row each, data untouched.
+function ArchivedBots({ bots, onChange }: { bots: any[]; onChange: () => void }) {
+  const nav = useNavigate();
+  async function unarchive(e: MouseEvent, b: any) {
+    e.stopPropagation();
+    try { await api.post(`/api/bots/${b.id}/unarchive`); toast(`${b.name} unarchived (not started)`, "ok"); onChange(); }
+    catch (err: any) { toast(err.message, "err"); }
+  }
+  return (
+    <div className="card flush">
+      <Table rows={bots} onRow={(b: any) => nav(`/bots/${b.id}`)} initialSort={{ key: "archived", desc: true }} cols={[
+        { key: "name", label: "Bot", align: "l", render: (b: any) => <><b>{b.name}</b> <span className="muted small">{b.id}</span></> },
+        { key: "strategy_label", label: "Strategy", align: "l" },
+        { key: "pnl_total", label: "Total PnL", render: (b: any) => { const v = b.live ? b.live.realized : b.pnl_total; return <span className={tone(v)}>{v == null ? "–" : signed(v)}</span>; },
+          sort: (b: any) => (b.live ? b.live.realized : b.pnl_total) ?? null },
+        { key: "windows", label: "Windows", render: (b: any) => b.windows ?? "–" },
+        { key: "archived", label: "Archived (UTC)", render: (b: any) => dtUTC(b.archived) },
+        { key: "act", label: "", render: (b: any) => <button className="btn sm" onClick={(e) => unarchive(e, b)}>Unarchive</button> },
+      ]} />
+    </div>
+  );
+}
+
+// Totals across every paper bot's current account (stopped bots included: their last state counts; archived bots
+// are not passed in). Live bots are left out: their paper twin only sizes real orders and would double-count the
+// paper bot it copies.
 function BotTotals({ bots }: { bots: any[] }) {
   const paper = bots.filter((b) => !b.live);
   const sum = (k: string) => paper.reduce((a, b) => a + (Number.isFinite(b[k]) ? b[k] : 0), 0);

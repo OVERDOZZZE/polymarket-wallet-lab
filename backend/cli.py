@@ -8,6 +8,7 @@
   python -m backend.cli export <trader> [--prices]      write a zip next to the project
   python -m backend.cli bots                            list bots
   python -m backend.cli bot start|stop <bot_id>         control a bot process
+  python -m backend.cli bot archive|unarchive <bot_id>  stop + hide a bot from the Bots page (data kept) / bring it back
 """
 import argparse
 import time
@@ -52,7 +53,7 @@ def main():
     e.add_argument("--prices", action="store_true")
     sub.add_parser("bots")
     b = sub.add_parser("bot")
-    b.add_argument("action", choices=["start", "stop"])
+    b.add_argument("action", choices=["start", "stop", "archive", "unarchive"])
     b.add_argument("bot_id")
     args = ap.parse_args()
 
@@ -91,9 +92,10 @@ def main():
         print(out)
     elif args.cmd == "bots":
         for bt in registry.list_bots():
-            print(f"{bt['id']:24s} {bt['strategy']:14s} {bt['mode']:6s} running={control.is_running(bt['id'])}")
+            print(f"{bt['id']:24s} {bt['strategy']:14s} {bt['mode']:6s} running={control.is_running(bt['id'])}"
+                  + (" archived" if bt.get("archived") else ""))
     elif args.cmd == "bot":
-        (control.start if args.action == "start" else control.stop)(args.bot_id)
+        getattr(control, args.action)(args.bot_id)
 
 
 if __name__ == "__main__":
