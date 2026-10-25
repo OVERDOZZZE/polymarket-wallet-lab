@@ -42,7 +42,10 @@ matched to our order ids, so another bot on the same wallet never mixes in. Safe
   * live_loss_limit_usd: no quoting once settled live trading PnL + the worst case of open windows (the worse side
     wins) reaches minus this; resting orders still filling in flight can take it a little past;
   * on stop (UI, SIGTERM) every live order is cancelled; at start, orders left by an earlier run are cancelled;
-  * rejections back off: post-only-would-cross 0.3 s at that price, no balance 2 s for every window.
+  * rejections back off: post-only-would-cross 0.3 s at that price, no balance / errors 2 s for every window; a
+    failed cancel request is retried after 0.2 s. Polymarket's per-signer limits (standard tier: 40 orders/s,
+    burst 60; 80 cancels/s, burst 120; a batch costs one token per order) leave room: this sends ~10 of each a
+    second while quoting, in batches of at most 15.
 With live_merge, each window's balanced Up + Down pairs are merged back into USDC 5 s after it closes (winners are
 redeemed by Polymarket). live_dry_run (paper mode only) runs the whole live order flow with simulated 30 ms acks
 and sends nothing, to check it on real books. The live ledger is rebuilt from live_orders (origin = bot id) on a
@@ -242,6 +245,7 @@ class ImbMakerBot(GuardMakerBot):
         self._lid = 0
         self._ltrades = set()                         # (trade id, order id) counted
         self._lblock = 0.0                            # no live placements before this (ms): balance / errors
+        self._lcretry = 0.0                           # a failed cancel request is retried from this time (ms)
         self._lready = False                          # gateway up and leftovers cancelled
         self._lrisk = (0.0, 0.0)                      # (settled live PnL, worst case of open windows)
         self._lprune = 0.0
@@ -492,7 +496,11 @@ class ImbMakerBot(GuardMakerBot):
             keep = set()
             for lid in lv["act"]:
                 o = self.lorders.get(lid)
-                if o is None or o["side"] != side or o["status"] not in ("sending", "live") or o["want_cancel"]:
+                if o is None or o["side"] != side or o["status"] not in ("sending", "live"):
+                    continue
+                if o["want_cancel"]:                  # unwanted while in flight: cancel once acked
+                    if o["status"] == "live":
+                        cancels.append((o, o["want_cancel"]))
                     continue
                 k = round(o["price"], 4)
                 if k in want[side] and k not in keep:
@@ -569,7 +577,7 @@ class ImbMakerBot(GuardMakerBot):
                 self.loid[o["oid"]] = o
                 self.lstat["live"] += 1
                 if o["want_cancel"]:                  # unwanted while it was on its way
-                    self._live_cancel([(o, o["want_cancel"])], now, force=True)
+                    self._live_cancel([(o, o["want_cancel"])], now)
                 continue
             o["status"], o["err"], o["code"] = "rejected", res["error"], res["code"]
             self.lstat["rej_" + str(res["code"])] += 1
@@ -583,15 +591,15 @@ class ImbMakerBot(GuardMakerBot):
                 if res["code"] == "exception":
                     self._err(f"live order: {res['error']}")
 
-    def _live_cancel(self, pairs, now, force=False):
+    def _live_cancel(self, pairs, now):
         ids = []
         for o, why in pairs:
             if o["status"] == "sending":
-                o["want_cancel"] = why                 # cancelled once its id is back
+                o["want_cancel"] = o["want_cancel"] or why     # cancelled once its id is back
                 continue
-            if o["status"] != "live" or (o["want_cancel"] and not force):
+            if o["status"] != "live" or now < self._lcretry:   # last cancel request failed (e.g. 429): retry soon
                 continue
-            o["status"], o["csent"], o["why"] = "cancelling", now, o["why"] or why
+            o["status"], o["csent"], o["why"] = "cancelling", now, o["why"] or o["want_cancel"] or why
             ids.append(o["oid"])
         if not ids:
             return
@@ -606,6 +614,7 @@ class ImbMakerBot(GuardMakerBot):
             r = f.result()
         except Exception as e:                         # still resting: the next decision cancels them again
             self.lstat["cancel_errors"] += 1
+            self._lcretry = now + 200
             self._err(f"live cancel: {type(e).__name__}: {e}"[:200])
             for oid in ids:
                 o = self.loid.get(oid)

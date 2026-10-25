@@ -211,6 +211,7 @@ class FakeGateway:
     def __init__(self):
         self.pool = self.bg = ThreadPoolExecutor(1)
         self.posts, self.cancels, self.reject, self.n, self.errors = [], [], set(), 0, []
+        self.fail_cancels = 0
 
     def post_limit_batch(self, orders, origin):
         out = []
@@ -224,6 +225,9 @@ class FakeGateway:
         return {"orders": out, "post_ms": 20.0}
 
     def cancel_batch(self, ids):
+        if self.fail_cancels:
+            self.fail_cancels -= 1
+            raise RuntimeError("429 Too Many Requests")
         self.cancels.append(list(ids))
         return {"canceled": list(ids), "not_canceled": {}, "ms": 20.0}
 
@@ -341,8 +345,21 @@ def live():
     e = (T0 + 275) * 1000.0
     for k in range(5):
         fut(b, e - 1000 + k * 200, 100000.0)
+    flush()                                            # (the rise back to 100000 has pulled Down by now)
+    n_live = len(act())
+    gw.fail_cancels = 1                                # the first cancel request fails (e.g. a 429)
     at(b, e)
     b._requote(m, e, force=True)
+    flush()
+    check(n_live > 0 and len(act()) == n_live and b.lstat["cancel_errors"] == 1,
+          f"live: failed cancel: {len(act())} of {n_live} live, {b.lstat['cancel_errors']} errors")
+    n_cancel = len(gw.cancels)
+    at(b, e + 100)
+    b._requote(m, e + 100, force=True)
+    flush()
+    check(len(gw.cancels) == n_cancel and len(act()) == n_live, "live: cancel retried inside its 200 ms pause")
+    at(b, e + 250)
+    b._requote(m, e + 250, force=True)
     flush()
     check(not act() and not any(x["status"] == "sending" for x in b.lorders.values()), "live: orders left at end - 25 s")
     loop.close()
