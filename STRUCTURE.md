@@ -94,6 +94,11 @@ backend/                     Python package (server, engines, analysis). Entry: 
     strategies/guard_maker.py  GuardMakerBot: two-sided post-only bids around fair (PaperBot quoting) + the fast
                              player's spike signal (subclass of FastBot): a spike cancels the threatened side at once
                              and keeps it out for pull_ms. Own cancel latency; prints judged at their match time
+    strategies/imb_maker.py  ImbMakerBot (subclass of GuardMakerBot), paper only: docs/bots/bot_sim/BOT_SPEC.md ported
+                             from its strategy.py (rule_size, BinanceGuard, top_depths, ladders): 13-level ladders on
+                             both tokens, top joins the best bid at queue share >= 0.4 else 2 ticks back, Binance
+                             futures guard on every trade (no quotes while the guard feed is stale), net cap 300. Own
+                             _requote (no price-model gate). Per-window logs -> data/bots/<id>/windows/ (see §5)
   trading/gateway.py         Gateway singleton on the official SDK `polymarket-client` (SecureClient, CLOB V2 orders,
                              auto wallet type), arm/limits, place/cancel, approvals, user-channel fills,
                              balances/positions, market pre-warming
@@ -128,6 +133,8 @@ scripts/geotest_order.py     one post-only $0.05 order + cancel: checks a server
 scripts/maker_latency_test.py  N post-only $0.05 orders + cancels: round trips and when each shows on / leaves the
                              market feed (= takes effect at the engine). Run on the server
 scripts/fast_value_live.py   server: create bot fast-value-live (fast-value's settings) / arm / disarm (mode live|paper)
+scripts/check_imb_maker.py   offline check of imb_maker against docs/bots/bot_sim/strategy.py + the spec's cases
+                             (python -m scripts.check_imb_maker; no network, no DB)
 scripts/feed_latency_test.py  standalone feed race (Binance/Coinbase/Chainlink: spike race, cross-correlation, TCP
                              connect, SNTP); places no orders. Output -> reports/latency_result.txt (Dublin, 10-23)
 deploy/install.sh            Linux server: install/update systemd services (server, recorder, one unit per bot)
@@ -136,6 +143,8 @@ docs/bots/                   the user's write-ups of bot versions: README.md (in
                              per strategy (<strategy>/README.md = versions table + notes, specs, results/ for small
                              exported results). Add a row there when creating a bot. Runtime data stays in data/ + DB
 docs/bots/fast_player/FAST_PLAYER_SPEC.md  spec of the user's earlier btc5m fast bots (fast_player.py rebuilt from it)
+docs/bots/bot_sim/           imb_maker's folder: BOT_SPEC.md (the study's build description, phases 1-2) + strategy.py
+                             (its reference decision code; imb_maker.py is the port)
 docs/TRADER_RE_PLAN.md       reference (suggestions only) for re-doing the CrouchPredictions / machinelearned study:
                              how to collect each data source, analysis options, bot-building options
 reports/                     study outputs: ULTIMATE_REPORT.md + ult_*.txt (old logger PC's 64 h study),
@@ -185,7 +194,7 @@ WAL mode; every process/thread opens its own connection via `db.conn()`. Schema 
 |---|---|---|---|
 | `traders` | id | traders/store.py | tracked wallets: name, wallet, asset, window, coverage (JSON), notes, flags |
 | `trader_events` | id | traders/live.py | live-captured trades/redeems of watched traders (`data` = full event JSON) |
-| `bots` | id | bots/registry.py, control.py | strategy, mode (paper/live), config JSON, current `account` number. Bots: `crouch-mm` (market_maker), `ml-copy` (ml_maker; `ml-join` (join_copy) deleted 2026-10-23), `crouch-v2` (crouch_v2), `fast-hold` / `fast-scalp` / `fast-value` and `fast-hold-v2` / `fast-scalp-v2` / `fast-value-v2` (fast_player), `late-fav` (late_fav) (guard_maker bots `guard-mm-5m` / `guard-mm-15m` deleted from the server 2026-10-23) |
+| `bots` | id | bots/registry.py, control.py | strategy, mode (paper/live), config JSON, current `account` number. Bots: `crouch-mm` (market_maker), `ml-copy` (ml_maker; `ml-join` (join_copy) deleted 2026-10-23), `crouch-v2` (crouch_v2), `fast-hold` / `fast-scalp` / `fast-value` and `fast-hold-v2` / `fast-scalp-v2` / `fast-value-v2` (fast_player), `late-fav` (late_fav), `imb-maker` (imb_maker, to create on the server) (guard_maker bots `guard-mm-5m` / `guard-mm-15m` deleted from the server 2026-10-23) |
 | `bot_fills` | id; (bot_id, account, ts) | bot process | every (paper) fill incl. maker/taker, rebate, markout. Sells (fast_player scalp) have negative `shares` and `usd` (= net cash received) |
 | `bot_windows` | (bot_id, account, slug) | bot process | per-window settlement record (`data` JSON), upserted until official |
 | `bot_equity` | (bot_id, account, ts) | bot process | portfolio value every 30 s (PnL chart) |
@@ -204,6 +213,7 @@ WAL mode; every process/thread opens its own connection via `db.conn()`. Schema 
 | `data/bots/<id>/state.json` | live snapshot, 2×/s | read by API `/api/bots/<id>/state` |
 | `data/bots/<id>/control.json` | commands to the bot | `{"id", "action": stop/reset/reset_day/config}` |
 | `data/bots/<id>/bot.pid`, `bot.log` | process id / output | errors are written here (one line per kind per 30 s) |
+| `data/bots/<id>/windows/<UTC day>/<slug>.json.gz` | imb_maker: one JSON per window (orders, fills, guard triggers, decisions as `{cols, rows}`, + cfg, winner, shares) | written at settlement, ~80-150 KB each; days older than 30 pruned |
 | `data/cache/resolutions.json` | market slug → winner | shared by traders |
 | `data/cache/klines/<SYMBOL>/<day>.csv` | Binance 1 s closes per UTC day | shared by traders |
 | `data/recordings/<YYYY-MM-DD>/<HH>.tsv.gz` | raw feeds, one line `recv_ms<TAB>source<TAB>message` (source cb = Coinbase ticker, or `matches` messages when Coinbase refused the ticker, bn, bf = Binance futures aggTrade (bookTicker 14:32-14:40Z on 10-22), kr, cl, act, info, bk:<slug>) | written by backend/recorder.py (~4 GB/day, 7 days kept; one gzip member per recorder start, closed on SIGTERM); read by bots/replay.py (`_gz_lines` also recovers hours where a killed recorder left a member unterminated) |

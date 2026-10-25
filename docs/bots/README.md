@@ -12,6 +12,7 @@ strategy is a **version** listed in the folder's `README.md`.
 | [fast_player/](fast_player/) | Fast player (latency taker) | `fast-hold`, `fast-scalp`, `fast-value`, `*-v2`, `fast-value-live` |
 | [late_fav/](late_fav/) | Late-favourite maker | `late-fav` |
 | [guard_maker/](guard_maker/) | Guarded two-sided maker | `guard-mm-5m`, `guard-mm-15m` (deleted) |
+| [bot_sim/](bot_sim/) | Imbalance maker (`imb_maker`) | `imb-maker` |
 
 ## Layout of a strategy folder
 

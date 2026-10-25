@@ -59,6 +59,14 @@ STRATEGIES = {
                        "rebate. When Coinbase/Kraken/Binance spike, the side about to be picked off is cancelled at "
                        "once (our cancels land in ~30 ms; takers are held ~250-500 ms). Holds to settlement.",
     },
+    "imb_maker": {
+        "module": "backend.bots.strategies.imb_maker", "engine": "ImbMakerBot", "config": "ImbMakerConfig",
+        "label": "Imbalance maker",
+        "description": "BTC 5m: CrouchPredictions' 13-level ladders on Up and Down, sized floor(60 / (1 - |p - 0.5|)); "
+                       "each top joins the best bid only when its queue share is >= 0.4, else sits 2 ticks back. A "
+                       "0.5 bps Binance futures move in 1 s pulls the threatened side for 1 s. Holds to settlement "
+                       "(docs/bots/bot_sim/BOT_SPEC.md).",
+    },
 }
 MODES = ("paper", "live")     # live: fast_player only (real buys next to its paper twin; see fast_player.py)
 

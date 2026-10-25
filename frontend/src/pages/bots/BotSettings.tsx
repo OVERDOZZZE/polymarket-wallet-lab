@@ -75,6 +75,15 @@ const META: Record<string, Meta> = {
   pull_ms: { label: "Keep the threatened side out for (ms)", help: "After the last spike tick, the side the move makes stale stays unquoted this long.", group: "Signal", step: 250 },
   cancel_latency_ms: { label: "Simulated cancel latency (ms)", help: "Time for a cancel to take effect. Measured from Dublin: ~26 ms p50, ~31 ms p90.", group: "Simulation", step: 5 },
   match_wait_ms: { label: "Quiet-market fill wait (ms)", help: "If no book message arrives after the match time, the order fills against the current book after this long.", group: "Simulation", step: 100 },
+  // imbalance maker (imb_maker)
+  B: { label: "Size base B", help: "Shares per bid = floor(B / (1 − |p − 0.5|)): 60 at 50¢, 75 at 30¢, 100 at 10¢.", group: "Quoting", step: 5 },
+  n_levels: { label: "Ladder levels per token", help: "Bids 1¢ apart going away from the market, none below the lowest buy price.", group: "Quoting", step: 1 },
+  imb_join: { label: "Join the best bid at queue share ≥", help: "Share = size at the token's best bid / (that + size at its best ask). Below it the top sits back.", group: "Quoting", step: 0.05 },
+  back_ticks: { label: "Ticks behind the best when not joining", group: "Quoting", step: 1 },
+  imb_low: { label: "Third tier below share (0 = off)", help: "Below this share the top sits the next setting's ticks back instead.", group: "Quoting", step: 0.05 },
+  back_low: { label: "Ticks behind in the third tier", group: "Quoting", step: 1 },
+  age_join: { label: "Min age of the best price to join (s)", group: "Quoting", step: 0.05 },
+  inv_cap: { label: "Net share cap per window", help: "No Up bids while Up − Down shares bought exceeds this; no Down bids below minus this.", group: "Risk", step: 25 },
   // live mode (bots.mode = 'live')
   live_paused: { label: "Pause live orders (kill switch)", help: "Takes effect at once; the paper twin keeps trading.", group: "Live" },
   live_scale: { label: "Live size = paper size ×", help: "0.2 = a $100 live account next to a $500 paper one. Orders below $1 are raised to $1.", group: "Live", step: 0.05 },
