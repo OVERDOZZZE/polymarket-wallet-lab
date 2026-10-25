@@ -29,7 +29,8 @@ time (guard_maker), settlement and persistence. Where this module replaces the i
     not a quiet market) or has not started, nothing is quoted, because the unguarded ladder is the losing version
     of this strategy.
   * rebate_share = 0.20: the spec's section 6 found 0.2 x fee rate x p(1-p) exact (the engine default is 0.15).
-  * spend_cap_usd (0 = off): a window whose fills cost this much is not quoted any more (spec phase 2: ~$100).
+  * spend_cap_usd (0 = off): once a window's fills cost this much only its lighter side is bid, until flat (spec
+    phase 2: ~$100; stopping both sides left windows one-sided in the first live run).
 Inherited settings this strategy ignores: levels, sizes, base_edge, level_step, model_weight, lead_weight, join_only,
 skew_per_100, max_side_shares, max_imbalance, max_window_cost, max_price, jump_*, taker_*, combine.
 
@@ -43,7 +44,9 @@ matched to our order ids, so another bot on the same wallet never mixes in. Safe
     wins) reaches minus this; resting orders still filling in flight can take it a little past;
   * on stop (UI, SIGTERM) every live order is cancelled; at start, orders left by an earlier run are cancelled;
     1 s after a window stops quoting, every order of the account still open in that market is cancelled (a post
-    that failed in transit may have landed; manual orders in that market go too);
+    that failed in transit may have landed; manual orders in that market go too); every 5 s (1 s after a failed
+    post) the exchange's open orders in the window are read: untracked ones are adopted (managed, fills counted),
+    tracked ones the exchange no longer has are dropped;
   * rejections back off: post-only-would-cross 0.3 s at that price, no balance / errors 2 s for every window; a
     failed cancel request is retried after 0.2 s. Polymarket's per-signer limits (standard tier: 40 orders/s,
     burst 60; 80 cancels/s, burst 120; a batch costs one token per order) leave room: this sends ~10 of each a
@@ -251,6 +254,7 @@ class ImbMakerBot(GuardMakerBot):
         self._lready = False                          # gateway up and leftovers cancelled
         self._lrisk = (0.0, 0.0)                      # (settled live PnL, worst case of open windows)
         self._lprune = 0.0
+        self._lrec = {}                               # slug -> when the exchange's open orders are checked next (ms)
         self.lstat = collections.Counter()
         self.lpost_ms, self.lcancel_ms = deque(maxlen=2000), deque(maxlen=2000)
         if self.mode == "live":
@@ -405,11 +409,11 @@ class ImbMakerBot(GuardMakerBot):
         g_up, g_dn, stale = self._guard_allow(now)
         d_up, d_dn = top_depths(cfg, size_bb, size_ba, (now - st["bb"][1]) / 1000.0, (now - st["ba"][1]) / 1000.0)
         st["inp"] = (bb, ba, d_up, d_dn, g_up, g_dn, stale)
-        spent = cfg.spend_cap_usd > 0 and m.total_cost() >= cfg.spend_cap_usd
-        want = {} if spent else ladders(cfg, bb, ba, d_up, d_dn, net, (g_up, g_dn))
+        spent = cfg.spend_cap_usd > 0 and m.total_cost() >= cfg.spend_cap_usd   # then only the lighter side
+        want = ladders(cfg, bb, ba, d_up, d_dn, net, (g_up and (not spent or net < 0), g_dn and (not spent or net > 0)))
         out = {k: list(v.items()) for k, v in _by_token(want).items()}
-        why = {s: self._why(stale, g, spent, capped) for s, g, capped in
-               (("up", g_up, net > cfg.inv_cap), ("down", g_dn, net < -cfg.inv_cap))}
+        why = {s: self._why(stale, g, spent and heavy, capped) for s, g, capped, heavy in
+               (("up", g_up, net > cfg.inv_cap, net >= 0), ("down", g_dn, net < -cfg.inv_cap, net <= 0))}
         tot = size_bb + size_ba
         code = {"requote": "q", "guard": "g", "cap": "c", "stale": "s", "spend_cap": "x"}
         self._log_decision(st, (round(now, 1), bb, ba, size_bb, size_ba, round(size_bb / tot if tot > 0 else 0.5, 4),
@@ -460,7 +464,12 @@ class ImbMakerBot(GuardMakerBot):
             return
         self._lrisk = self._live_risk()
         for m in list(self.markets.values()):
-            lv = m.__dict__.get("lv")                  # 1 s after quoting stops: cancel anything still open in this
+            lv = m.__dict__.get("lv")
+            if (lv and lv["lids"] and self.gw is not None and m.condition and now / 1000.0 < m.end + 30
+                    and now >= self._lrec.get(m.slug, 0.0)):      # what the exchange really has open, every 5 s
+                self._lrec[m.slug] = now + 5000
+                self._live_reconcile(m, now)
+            # 1 s after quoting stops: cancel anything still open in this
             if (lv and lv["lids"] and not lv.get("swept") and self.gw is not None and m.condition   # market (a post that
                     and now / 1000.0 >= m.end - self.cfg.stop_before_end_s + 1):                   # failed in transit
                 lv["swept"] = True                                                                  # may have landed)
@@ -493,9 +502,11 @@ class ImbMakerBot(GuardMakerBot):
         reason = off or self._live_block(w) or (None if inp else "no_book")
         if reason is None:
             bb, ba, d_up, d_dn, g_up, g_dn, stale = inp
-            want = _by_token(ladders(cfg, bb, ba, d_up, d_dn, net, (g_up, g_dn)))
-            why = {s: self._why(stale, g, False, capped) for s, g, capped in
-                   (("up", g_up, net > cfg.inv_cap), ("down", g_dn, net < -cfg.inv_cap))}
+            spent = w is not None and cfg.spend_cap_usd > 0 and w["up_cost"] + w["down_cost"] >= cfg.spend_cap_usd
+            want = _by_token(ladders(cfg, bb, ba, d_up, d_dn, net,       # spend cap reached: only the lighter side
+                                     (g_up and (not spent or net < 0), g_dn and (not spent or net > 0))))
+            why = {s: self._why(stale, g, spent and heavy, capped) for s, g, capped, heavy in
+                   (("up", g_up, net > cfg.inv_cap, net >= 0), ("down", g_dn, net < -cfg.inv_cap, net <= 0))}
         else:
             want, why = {"up": {}, "down": {}}, {"up": reason, "down": reason}
         cancels, places = [], []
@@ -535,8 +546,6 @@ class ImbMakerBot(GuardMakerBot):
         realized, worst = self._lrisk
         if realized + worst <= -cfg.live_loss_limit_usd + 1e-9:
             return "loss_limit"
-        if w is not None and cfg.spend_cap_usd > 0 and w["up_cost"] + w["down_cost"] >= cfg.spend_cap_usd:
-            return "spend_cap"
         return None
 
     def _live_call(self, fn, *args):
@@ -579,6 +588,9 @@ class ImbMakerBot(GuardMakerBot):
         lv = _lv(m)
         for o, res in zip(items, r["orders"]):
             o["ack"], o["post_ms"] = now, r.get("post_ms")
+            if res["ok"] and res["order_id"] in self.loid:   # adopted by a reconcile before this ack came back
+                o["status"], o["code"] = "done", "dup"
+                continue
             if res["ok"]:
                 o["oid"], o["status"] = res["order_id"], "live"
                 self.loid[o["oid"]] = o
@@ -594,6 +606,8 @@ class ImbMakerBot(GuardMakerBot):
                 lv["backoff"][(o["side"], o["price"])] = now + 1000
                 if res["code"] in ("not_enough_balance", "exception", "error", "unknown"):
                     self._lblock = now + 2000
+                if res["code"] in ("exception", "error", "unknown"):      # it may have landed: look in 1 s
+                    self._lrec[m.slug] = min(self._lrec.get(m.slug, now + 1000), now + 1000)
                 self._live_log("rejected", o, info=res["error"])
                 if res["code"] == "exception":
                     self._err(f"live order: {res['error']}")
@@ -739,6 +753,52 @@ class ImbMakerBot(GuardMakerBot):
         self.live_log.append({"ts": time.time(), "kind": kind, "slug": o["slug"], "win": o["win"], "side": o["side"],
                               "price": o["price"], "size": o["size"], "shares": shares, "info": info,
                               "ms": o.get("post_ms")})
+
+    def _live_reconcile(self, m, now):
+        fut = self._loop.run_in_executor(self.gw.pool, self.gw.open_orders_in, m.condition)
+        fut.add_done_callback(lambda f: self._live_reconciled(f, m, now))
+
+    def _live_reconciled(self, f, m, t_req):
+        """Adopt open orders the exchange has but we lost (a post that failed in transit yet landed), so they are
+        managed and their fills counted; drop orders we think rest but the exchange no longer has."""
+        now = self.clock() * 1000.0
+        try:
+            rows = f.result()
+        except Exception as e:
+            self.lstat["reconcile_errors"] += 1
+            self._err(f"live reconcile: {type(e).__name__}: {e}"[:200])
+            return
+        lv, seen = _lv(m), set()
+        for r in rows:
+            oid = str(r.get("id"))
+            seen.add(oid)
+            side = m.side_of.get(str(r.get("asset_id")))
+            if oid in self.loid or side is None or str(r.get("side")).upper() != "BUY":
+                continue
+            try:
+                px, size, sm = round(float(r["price"]), 4), float(r["original_size"]), float(r.get("size_matched") or 0)
+            except (KeyError, TypeError, ValueError):
+                continue
+            self._lid += 1
+            o = {"lid": self._lid, "slug": m.slug, "win": m.minutes, "start": m.start, "end": m.end, "side": side,
+                 "price": px, "size": size, "matched": 0.0, "tsum": 0.0, "sent": now, "ack": now, "post_ms": None,
+                 "oid": oid, "status": "live", "csent": None, "cack": None, "why": None, "code": "adopted",
+                 "err": None, "want_cancel": None}
+            self.lorders[o["lid"]] = o
+            self.loid[oid] = o
+            lv["lids"].append(o["lid"])
+            lv["act"].append(o["lid"])
+            self.lstat["adopted"] += 1
+            self._live_log("adopted", o, info="open on the exchange but not tracked")
+            if sm > 0:
+                self._live_matched(o, sm, now, None)
+        for lid in list(lv["act"]):
+            o = self.lorders.get(lid)
+            if (o is not None and o["status"] in ("live", "cancelling") and o["oid"] not in seen
+                    and o["ack"] is not None and o["ack"] < t_req - 1000):
+                o["status"], o["code"] = "done", o["code"] or "gone"
+                self.lstat["vanished"] += 1
+        self._requote(m, now, force=True)
 
     def _live_sweep(self, m):
         def done(f):

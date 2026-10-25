@@ -338,6 +338,13 @@ class Gateway:
         return {"canceled": [str(x) for x in r.canceled], "not_canceled": {str(k): v for k, v in r.not_canceled.items()},
                 "ms": round((time.perf_counter() - t0) * 1000, 1)}
 
+    def open_orders_in(self, condition_id):
+        """This account's open orders in one market: [{id, asset_id, side, price, original_size, size_matched}]."""
+        if not self.enabled:
+            raise RuntimeError(self.reason or "trading is not available")
+        return [{k: o.get(k) for k in ("id", "asset_id", "side", "price", "original_size", "size_matched")}
+                for o in (x.model_dump(mode="json") for x in self.client.list_open_orders(market=condition_id).iter_items())]
+
     def cancel_market(self, condition_id):
         """Cancel every open order of this account in one market (a maker's end-of-window sweep)."""
         if not self.enabled:

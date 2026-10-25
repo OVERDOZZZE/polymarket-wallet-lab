@@ -212,6 +212,10 @@ class FakeGateway:
         self.pool = self.bg = ThreadPoolExecutor(1)
         self.posts, self.cancels, self.reject, self.n, self.errors = [], [], set(), 0, []
         self.fail_cancels = 0
+        self.open = []
+
+    def open_orders_in(self, condition_id):
+        return list(self.open)
 
     def post_limit_batch(self, orders, origin):
         out = []
@@ -338,6 +342,37 @@ def live():
     check(not act() and b._live_block(None) == "loss_limit", f"live: loss limit left {len(act())} orders")
     b.live.pop("btc-updown-5m-1")
     b._tick(t + 1790)
+    # reconcile: an order the exchange has but we lost is adopted (its fill counted, then managed); a tracked one
+    # the exchange no longer has is dropped
+    at(b, t + 1791)
+    b._requote(m, t + 1791, force=True)
+    flush()
+    tok = {"up": "U", "down": "D"}
+    gw.open = [{"id": o["oid"], "asset_id": tok[o["side"]], "side": "BUY", "price": str(o["price"]),
+                "original_size": str(o["size"]), "size_matched": "0"} for o in act()]
+    gone = gw.open.pop()["id"]
+    gw.open.append({"id": "lost1", "asset_id": "D", "side": "BUY", "price": "0.3", "original_size": "6", "size_matched": "2"})
+    dn0 = b.live[m.slug]["down_sh"]
+    at(b, t + 1792)
+    b._live_reconcile(m, t + 5000)
+    flush()
+    flush()
+    check(b.lstat["adopted"] == 1 and abs(b.live[m.slug]["down_sh"] - dn0 - 2) < 1e-9, "live: lost order not adopted / fill missed")
+    check(any("lost1" in c for c in gw.cancels), "live: adopted unwanted order not cancelled")
+    check(b.loid[gone]["status"] == "done" and b.lstat["vanished"] >= 1,    # (orders still cancelling count too)
+          f"live: order gone from the exchange not dropped ({b.loid[gone]['status']}, {b.lstat['vanished']})")
+    gw.open = []
+    # spend cap: once reached, only the lighter side is bid
+    w = b.live[m.slug]
+    saved = dict(w)
+    w.update(up_sh=0.0, down_sh=10.0, up_cost=0.0, down_cost=5.0)
+    b.cfg = b.CONFIG.from_dict({**b.cfg.to_dict(), "spend_cap_usd": 1.0})
+    at(b, t + 1794)
+    b._requote(m, t + 1794, force=True)
+    flush()
+    check(not act("down") and len(act("up")) >= 12, f"live: spend cap: {len(act('up'))} Up / {len(act('down'))} Down")
+    b.cfg = b.CONFIG.from_dict({**b.cfg.to_dict(), "spend_cap_usd": 0.0})
+    w.update(saved)
     # end of quoting: everything cancelled at end - 25 s
     at(b, t + 1800)
     b._requote(m, t + 1800, force=True)
