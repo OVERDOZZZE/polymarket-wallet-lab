@@ -391,7 +391,8 @@ class Gateway:
             up_since = None
             try:
                 self.user_ws = "connecting"
-                async with websockets.connect(CLOB_USER_WS, ping_interval=None, open_timeout=10, max_size=None) as ws:
+                async with websockets.connect(CLOB_USER_WS, ping_interval=None, open_timeout=10, close_timeout=1,
+                                              max_size=None) as ws:
                     await ws.send(json.dumps(sub))
                     self.user_ws, last_ping = "connected", time.time()
                     up_since = last_rx = time.time()

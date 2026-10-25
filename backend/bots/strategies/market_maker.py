@@ -60,6 +60,8 @@ MARKOUT_S = 10          # adverse-selection check horizon
 LEVEL_MATCH_MS = 400    # a level shrink and the trade print behind it arrive within this of each other
 ERR_REPEAT_S = 30       # the same error is written to bot.log at most once per this many seconds
 LAT_STATS_N = 4000      # latency percentiles for the UI: over this many most recent samples per stage
+WS_CLOSE_S = 1          # feed sockets: wait this long for the close handshake (Binance never answers; the 10 s
+                        # default made a UI Stop overrun control.stop, get SIGKILLed and systemd restart the bot)
 HTTP = requests.Session()
 HTTP.headers["User-Agent"] = "Mozilla/5.0 (pmtool bot)"
 
@@ -423,7 +425,7 @@ class PaperBot:
             try:
                 self.status["coinbase"] = "connecting"
                 async with websockets.connect(COINBASE_WS, ping_interval=15, ping_timeout=15, max_size=None, max_queue=None,
-                                              open_timeout=10, compression=None) as ws:
+                                              open_timeout=10, close_timeout=WS_CLOSE_S, compression=None) as ws:
                     await ws.send(json.dumps({"type": "subscribe", "product_ids": ["BTC-USD"],
                                               "channels": ["ticker"]}))
                     self.status["coinbase"] = "connected"
@@ -510,8 +512,8 @@ class PaperBot:
         while True:
             try:
                 self.status["binance"] = "connecting"
-                async with websockets.connect(BINANCE_WS, ping_interval=15, ping_timeout=15, max_size=None,
-                                              max_queue=None, open_timeout=10, compression=None) as ws:
+                async with websockets.connect(BINANCE_WS, ping_interval=15, ping_timeout=15, max_size=None, max_queue=None,
+                                              open_timeout=10, close_timeout=WS_CLOSE_S, compression=None) as ws:
                     self.status["binance"] = "connected"
                     backoff = 1
                     while True:
@@ -562,7 +564,7 @@ class PaperBot:
             try:
                 self.status["chainlink"] = "connecting"
                 async with websockets.connect(RTDS_URL, ping_interval=10, ping_timeout=10, max_size=None, max_queue=None,
-                                              open_timeout=10, compression=None) as ws:
+                                              open_timeout=10, close_timeout=WS_CLOSE_S, compression=None) as ws:
                     await ws.send(json.dumps({"action": "subscribe", "subscriptions": subs}))
                     self.status["chainlink"] = "connected"
                     backoff = 1
@@ -707,7 +709,7 @@ class PaperBot:
             try:
                 m.ws_status = "connecting"
                 async with websockets.connect(CLOB_WS, ping_interval=None, max_size=None, max_queue=None, open_timeout=10,
-                                              compression="deflate") as ws:
+                                              close_timeout=WS_CLOSE_S, compression="deflate") as ws:
                     await ws.send(json.dumps({"assets_ids": list(m.tokens.values()), "type": "market"}))
                     m.ws_status = "connected"
                     backoff, last_ping = 0.1, time.time()

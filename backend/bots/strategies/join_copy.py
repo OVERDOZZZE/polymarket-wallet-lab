@@ -16,7 +16,7 @@ import time
 
 import orjson
 
-from .market_maker import BotConfig, PaperBot, _floor_tick
+from .market_maker import WS_CLOSE_S, BotConfig, PaperBot, _floor_tick
 from ...config import RTDS_WS
 
 ML_WALLET = "0x86b14772a4da70f3e6d5eee06933ebef143efc87"
@@ -62,7 +62,7 @@ class JoinCopyBot(PaperBot):
             try:
                 self.status["target"] = "connecting"
                 async with websockets.connect(RTDS_WS, ping_interval=10, ping_timeout=10, max_size=None,
-                                              open_timeout=10) as ws:
+                                              open_timeout=10, close_timeout=WS_CLOSE_S) as ws:
                     await ws.send(json.dumps({"action": "subscribe",
                                               "subscriptions": [{"topic": "activity", "type": "trades"}]}))
                     self.status["target"] = "connected"

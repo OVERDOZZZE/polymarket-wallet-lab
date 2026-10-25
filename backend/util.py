@@ -1,6 +1,7 @@
 """Small shared helpers: atomic files, clock offset, process checks, percentiles."""
 import json
 import os
+import signal
 import socket
 import struct
 import subprocess
@@ -134,8 +135,18 @@ def kill_pid(p):
         return
     if sys.platform == "win32":
         subprocess.run(["taskkill", "/PID", str(p), "/T", "/F"], capture_output=True)   # /T: venv launcher + child
-    else:
-        os.kill(int(p), 9)
+        return
+    # SIGTERM first: systemd's Restart=on-failure takes it as a clean stop, but a SIGKILL as a crash and restarts
+    for sig, wait_s in ((signal.SIGTERM, 2.0), (signal.SIGKILL, 0)):
+        try:
+            os.kill(int(p), sig)
+        except OSError:
+            return
+        t0 = time.time()
+        while time.time() - t0 < wait_s:
+            time.sleep(0.1)
+            if not pid_alive(p):
+                return
 
 
 def high_priority():

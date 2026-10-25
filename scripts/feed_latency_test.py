@@ -28,8 +28,8 @@ Sources:
                 creds in env: POLY_API_KEY, POLY_API_SECRET, POLY_API_PASSPHRASE)
 
 Install:   pip install websockets numpy
-Run:       python feed_latency_test.py --duration 240
-Self-test: python feed_latency_test.py --selftest
+Run:       python scripts/feed_latency_test.py --duration 240
+Self-test: python scripts/feed_latency_test.py --selftest
 """
 import argparse
 import asyncio

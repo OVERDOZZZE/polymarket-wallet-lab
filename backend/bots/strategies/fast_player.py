@@ -1,5 +1,5 @@
 """Fast player (strategy "fast_player"): a latency taker on BTC Up/Down windows. Rebuilt 2026-10-22 on this
-engine from the user's earlier btc5m bots (FAST_PLAYER_SPEC.md in the project root), for the Dublin server.
+engine from the user's earlier btc5m bots (docs/bots/fast_player/FAST_PLAYER_SPEC.md), for the Dublin server.
 
 Edge: when BTC jumps on the exchanges, Chainlink (which settles the window) follows ~1.3 s later and
 Polymarket's book reprices over ~0.5-2 s. Measured from Dublin (26 min, 2026-10-22): 50 ms after a spike the
@@ -51,7 +51,7 @@ import orjson
 
 from ... import db
 from ...config import BINANCE_FUT_WS, KRAKEN_WS
-from .market_maker import Order, PaperBot
+from .market_maker import WS_CLOSE_S, Order, PaperBot
 
 SOURCES = ("coinbase", "kraken", "binance", "binance_fut")
 KR_SYMBOL = "BTC/USD"
@@ -197,7 +197,8 @@ class FastBot(PaperBot):
             try:
                 self.status["kraken"] = "connecting"
                 async with websockets.connect(KRAKEN_WS, ping_interval=15, ping_timeout=15, max_size=None,
-                                              max_queue=None, open_timeout=10, compression=None) as ws:
+                                              max_queue=None, open_timeout=10, close_timeout=WS_CLOSE_S,
+                                              compression=None) as ws:
                     # default event_trigger = trades: a message per trade, so a quiet Kraken goes stale
                     await ws.send(json.dumps({"method": "subscribe",
                                               "params": {"channel": "ticker", "symbol": [KR_SYMBOL]}}))
@@ -220,7 +221,8 @@ class FastBot(PaperBot):
             try:
                 self.status["binance_fut"] = "connecting"
                 async with websockets.connect(BINANCE_FUT_WS, ping_interval=15, ping_timeout=15, max_size=None,
-                                              max_queue=None, open_timeout=10, compression=None) as ws:
+                                              max_queue=None, open_timeout=10, close_timeout=WS_CLOSE_S,
+                                              compression=None) as ws:
                     self.status["binance_fut"] = "connected"
                     backoff = 1
                     while True:

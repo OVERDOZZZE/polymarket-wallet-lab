@@ -82,7 +82,7 @@ backend/                     Python package (server, engines, analysis). Entry: 
     strategies/join_copy.py  JoinCopyBot: copies a wallet's fills live (RTDS activity stream)
     strategies/crouch_v2.py  CrouchBot: CrouchPredictions followed from its live fills (one level, sized by price,
                              momentum takes); calibration in its docstring
-    strategies/fast_player.py  FastBot: latency taker (FAST_PLAYER_SPEC.md rebuilt): Coinbase/Kraken/Binance spike ->
+    strategies/fast_player.py  FastBot: latency taker (docs/bots/fast_player/FAST_PLAYER_SPEC.md rebuilt): Coinbase/Kraken/Binance spike ->
                              FAK buy before the book reprices; hold or scalp exit; FAK fills on the book at match time
                              (Polymarket clock), own Kraken + Binance futures feeds, sells, signal log (`signals`).
                              Live mode (bots.mode='live', read at start): own Gateway, real FAK buy of paper $ x
@@ -128,10 +128,18 @@ scripts/geotest_order.py     one post-only $0.05 order + cancel: checks a server
 scripts/maker_latency_test.py  N post-only $0.05 orders + cancels: round trips and when each shows on / leaves the
                              market feed (= takes effect at the engine). Run on the server
 scripts/fast_value_live.py   server: create bot fast-value-live (fast-value's settings) / arm / disarm (mode live|paper)
+scripts/feed_latency_test.py  standalone feed race (Binance/Coinbase/Chainlink: spike race, cross-correlation, TCP
+                             connect, SNTP); places no orders. Output -> reports/latency_result.txt (Dublin, 10-23)
 deploy/install.sh            Linux server: install/update systemd services (server, recorder, one unit per bot)
 deploy/systemd/              pmtool-server, pmtool-recorder, pmtool-bot@<id> unit files
-TRADER_RE_PLAN.md            reference (suggestions only) for re-doing the CrouchPredictions / machinelearned study:
+docs/bots/                   the user's write-ups of bot versions: README.md (index + version template), one folder
+                             per strategy (<strategy>/README.md = versions table + notes, specs, results/ for small
+                             exported results). Add a row there when creating a bot. Runtime data stays in data/ + DB
+docs/bots/fast_player/FAST_PLAYER_SPEC.md  spec of the user's earlier btc5m fast bots (fast_player.py rebuilt from it)
+docs/TRADER_RE_PLAN.md       reference (suggestions only) for re-doing the CrouchPredictions / machinelearned study:
                              how to collect each data source, analysis options, bot-building options
+reports/                     study outputs: ULTIMATE_REPORT.md + ult_*.txt (old logger PC's 64 h study),
+                             latency_result.txt (feed race from Dublin)
 archive/v1-2026-10-21/       old Streamlit code, raw v1 files (profiles/, bot_data/, legacy data/) — read-only
 .tools/node/                 portable Node.js 24 (UI build only)
 run_app.bat                  launcher
@@ -208,7 +216,9 @@ Since 2026-10-22 the app also runs on an AWS EC2 server in Dublin (eu-west-1, Ub
 Polymarket's London servers; the UK itself is close-only for the API). Code lives in `~/app` (same layout),
 deployed by copying the project without `.env*`, `*.pem`, `data/`, `archive/`. systemd runs
 `pmtool-server` (UI on 127.0.0.1:8000 only; open it through an SSH tunnel), `pmtool-recorder` and
-`pmtool-bot@<id>` (Nice −5, restarted on crash, a UI Stop stays stopped). Install/update:
+`pmtool-bot@<id>` (Nice −5, restarted on crash, a UI Stop stays stopped: the bot exits 0 within ~2 s because feed
+sockets close with `market_maker.WS_CLOSE_S`; if it hangs, `control.stop` sends SIGTERM, which systemd's
+`Restart=on-failure` treats as clean, and only then SIGKILL, which it treats as a crash). Install/update:
 `bash deploy/install.sh <bot ids>`. Logs: `journalctl -u pmtool-server`, `data/bots/<id>/bot.log`,
 `data/recordings/recorder.log`. On Linux, uvloop is used and bots started from the UI detach from the server.
 A bot refuses to start twice (runner checks bot.pid). The server's DB is its own copy: results there and on
@@ -300,7 +310,8 @@ the home PC are separate.
   `backend/bots/strategies/<name>.py` with an engine class (`__init__(bot_id)`,
   `start/stop/snapshot`, `running`, `publish_state`, `_thread`; persist via the same DB tables) and a config
   dataclass with `from_dict/to_dict`. Register in `registry.STRATEGIES`. The UI settings form renders any
-  config keys; add labels in `frontend/src/pages/bots/BotSettings.tsx:META`.
+  config keys; add labels in `frontend/src/pages/bots/BotSettings.tsx:META`. Add `docs/bots/<strategy>/README.md`
+  (copy a sibling) and a row in `docs/bots/README.md`.
 * **Bot history:** creating a bot writes its first `bot_changes` entry; record rebuilds, audits and simulator
   changes with `registry.add_change(bot_id, text, kind)` so the bot page's "About this bot" stays a true log.
 * **Bot going live:** route orders through `trading.gateway.gateway.place(req | {"origin": bot_id})` from the
