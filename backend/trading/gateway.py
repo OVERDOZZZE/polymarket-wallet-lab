@@ -70,6 +70,7 @@ class Gateway:
         self.reconnects = 0                               # CLOB HTTP/2 connections recycled (see _keepalive)
         self.light = False                                # bot process: poll USDC only (no token balances/positions)
         self.on_event = None                              # bot process: called on the loop with each user-channel event
+        self._fill_refresh_ts = 0.0                       # last balance refresh triggered by a fill
 
     # ------------------------------------------------------------------ lifecycle
     def start(self, loop):
@@ -518,12 +519,16 @@ class Gateway:
                     self._err(f"store trade: {ex}")
                 self.publish({"type": "trade", "trade": e, "slug": slug})
                 # balances move when the fill settles on-chain (MINED / CONFIRMED), not at MATCHED
-                # (bot processes: the 10 s poll only; a maker's fills would hit the balance endpoint's rate limit)
-                if e.get("status") in ("MATCHED", "MINED", "CONFIRMED", None) and not self.light:
+                # bot processes: the 10 s poll only. Elsewhere at most one refresh burst per 2 s: a live maker's fills
+                # arrive on every process's user channel and would hit the balance endpoint's rate limit
+                now = time.time()
+                if not self.light and now - self._fill_refresh_ts >= 2.0 and \
+                        e.get("status") in ("MATCHED", "MINED", "CONFIRMED", None):
+                    self._fill_refresh_ts = now
                     self.bg.submit(self.refresh_balances)
                     self.bg.submit(self.refresh_positions)
-                if e.get("status") in ("MATCHED", None) and not self.light:
-                    self._refresh_soon()
+                    if e.get("status") in ("MATCHED", None):
+                        self._refresh_soon()
             elif et == "order":
                 oid = e.get("id")
                 if e.get("type") == "CANCELLATION" or (float(e.get("size_matched") or 0) >= float(e.get("original_size") or 1e18)):
