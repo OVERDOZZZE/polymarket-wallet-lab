@@ -667,7 +667,7 @@ class FastBot(PaperBot):
             why = "no_gateway"
         elif room is not None and room - usd_l < -1e-9:
             why = "loss_limit"
-        elif gw.balance is not None and gw.balance < usd_l:
+        elif (gw.balance is None and cfg.live_stake_frac > 0) or (gw.balance is not None and gw.balance < usd_l):
             why = "no_cash"
         row = {"ts": time.time(), "slug": m.slug, "win": m.minutes, "side": side, "limit": limit,
                "paper_usd": usd, "usd": usd_l, "spent": None, "shares": None, "avg": None, "ms": None,
