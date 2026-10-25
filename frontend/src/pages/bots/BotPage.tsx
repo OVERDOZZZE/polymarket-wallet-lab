@@ -238,7 +238,7 @@ function LiveProfileCard({ s, running, b }: { s: any; running: boolean; b: any }
         <div className="pm-ava live" />
         <div>
           <div className="pm-name">{s.name || b?.name}<LiveBadge on={running} /></div>
-          <div className="pm-meta"><b className="dn">REAL MONEY</b> · <span className={cls}>{state}</span>{!L.enabled && L.reason ? ` (${L.reason})` : ""} · size = paper × {L.scale}</div>
+          <div className="pm-meta"><b className="dn">REAL MONEY</b> · <span className={cls}>{state}</span>{!L.enabled && L.reason ? ` (${L.reason})` : ""} · size = {L.size ?? `paper × ${L.scale}`}</div>
         </div>
       </div>
       <div className="pm-stats">
@@ -247,14 +247,14 @@ function LiveProfileCard({ s, running, b }: { s: any; running: boolean; b: any }
         <div><div className="v">{money(L.at_risk, 2)}</div><div className="l">At risk now</div></div>
       </div>
       <div className="pm-rows">
-        <span className="l">Loss limit left</span><span className={`v ${L.room < 5 ? "dn" : ""}`}>{money(Math.max(0, L.room), 2)} of {money(L.loss_limit, 0)} <span className="muted small">(open $ counts as lost)</span></span>
+        <span className="l">Loss limit left</span><span className={`v ${L.room != null && L.room < 5 ? "dn" : ""}`}>{L.room == null ? "no limit" : <>{money(Math.max(0, L.room), 2)} of {money(L.loss_limit, 0)}{L.loss_period === "today" ? " today (UTC)" : ""}</>} <span className="muted small">(open $ counts as lost)</span></span>
         {a.daily_limit && <><span className="l">Paper twin daily limit</span><span className={`v ${a.daily_limit.hit ? "dn" : ""}`}>{a.daily_limit.hit ? "Reached: no live orders · " : ""}{money(a.daily_limit.lost, 2)} of {money(a.daily_limit.limit, 0)} used</span></>}
         <span className="l">Live windows won</span><span className="v">{L.windows_done ? `${L.windows_won}/${L.windows_done}` : "–"}</span>
         <span className="l">Spent live</span><span className="v">{money(L.spent, 2)}</span>
         <span className="l">Live orders filled</span><span className="v">{L.sent ? `${L.filled}/${L.sent}` : "–"}{L.missed ? <span className="muted small"> · {L.missed} missed</span> : null}{L.rejected ? <span className="dn small"> · {L.rejected} rejected</span> : null}</span>
         <span className="l">Order latency</span><span className="v">{L.order_ms ? `${Math.round(L.order_ms)} ms` : "–"} <span className="muted small">p50</span></span>
       </div>
-      <p className="hint" style={{ marginTop: 8 }}>Sized from the paper twin (paper $ × {L.scale}, its {money(a.bankroll, 0)} account is in the Paper twin tab). Every number on this page outside that tab is the real wallet.</p>
+      <p className="hint" style={{ marginTop: 8 }}>Entries follow the paper twin (its {money(a.bankroll, 0)} account is in the Paper twin tab); live size = {L.size ?? `paper $ × ${L.scale}`}. Every number on this page outside that tab is the real wallet.</p>
     </div>
   );
 }
@@ -308,7 +308,7 @@ function PaperTwin({ s, id, points, running }: { s: any; id: string; points: [nu
     <div className="col">
       {s.live.kind === "maker"
         ? <p className="hint">Paper only, no real money. The twin makes the same decisions on the same books (order latency {s.cfg?.latency_ms ?? "–"} ms) with its own simulated fills and inventory; the live orders follow the same rules with the real fills. Compare the two to see how far paper is from reality.</p>
-        : <p className="hint">Paper only, no real money. The twin trades every signal on simulated fills (order latency {s.cfg?.latency_ms ?? "–"} ms); each of its entries sends one real order of its $ × {s.live.scale}. Compare its fills with the Live account tab to see how far paper is from reality.</p>}
+        : <p className="hint">Paper only, no real money. The twin trades every signal on simulated fills (order latency {s.cfg?.latency_ms ?? "–"} ms); each of its entries sends one real order ({s.live.size ?? `its $ × ${s.live.scale}`}). Compare its fills with the Live account tab to see how far paper is from reality.</p>}
       <div className="grid2">
         <ProfileCard s={s} running={running} b={null} />
         <PnlCard s={s} points={points} />
@@ -442,7 +442,7 @@ function LiveAccount({ L }: { L: any }) {
       {L.gw_reconnects > 0 && <p className="hint">CLOB connection recycled by Polymarket {L.gw_reconnects}× (every 10,000 requests); reconnected at once each time.</p>}
       <div className="card flush">
         <div className="t2" style={{ padding: "10px 14px" }}>Live orders</div>
-        {!log.length ? <Empty title="No live orders yet">Each paper entry also sends a real order of paper $ × {L.scale}.</Empty> : (
+        {!log.length ? <Empty title="No live orders yet">Each paper entry also sends a real order ({L.size ?? `paper $ × ${L.scale}`}).</Empty> : (
           <Table rows={log} cols={[
             { key: "ts", label: "When", align: "l", render: (r: any) => <span className="muted">{ago(r.ts, now)}</span> },
             { key: "m", label: "Market", align: "l", render: (r: any) => { const st = Number(r.slug.split("-").pop()); return mktCell(r.win, st, st + r.win * 60); } },

@@ -90,7 +90,9 @@ const META: Record<string, Meta> = {
   // live mode (bots.mode = 'live')
   live_paused: { label: "Pause live orders (kill switch)", help: "Takes effect at once; the paper twin keeps trading.", group: "Live" },
   live_scale: { label: "Live size = paper size ×", help: "0.2 = a $100 live account next to a $500 paper one. Orders below $1 are raised to $1.", group: "Live", step: 0.05 },
-  live_loss_limit_usd: { label: "Live loss limit ($)", help: "Settled losses plus $ in open windows; no new live order once it would pass this.", group: "Live", step: 5 },
+  live_stake_frac: { label: "Live size = wallet ×", help: "0.05 = each live order is 5% of the live USDC balance (0 = use the paper × setting above).", group: "Live", step: 0.01 },
+  live_loss_limit_usd: { label: "Live loss limit ($, 0 = off)", help: "Settled losses plus $ in open windows; no new live order once it would pass this.", group: "Live", step: 5 },
+  live_daily_loss_usd: { label: "Live daily loss limit ($, 0 = off)", help: "The same, counting only windows started today (UTC); resets at 00:00 UTC.", group: "Live", step: 5 },
   live_max_order_usd: { label: "Max $ per live order", group: "Live", step: 5 },
 };
 const GROUPS = ["Live", "Signal", "Exit", "Quoting", "Risk", "Simulation"] as const;

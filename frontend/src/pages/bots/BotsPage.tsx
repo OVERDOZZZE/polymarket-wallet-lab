@@ -41,7 +41,7 @@ export default function BotsPage() {
                   <span className="l">Wallet</span><span className="v">{b.live.usdc == null ? "–" : money(b.live.usdc, 2)}</span>
                   <span className="l">Live PnL</span><span className={`v ${tone(b.live.realized)}`}>{signed(b.live.realized)}</span>
                   <span className="l">At risk</span><span className="v">{money(b.live.at_risk, 2)}</span>
-                  <span className="l">Limit left</span><span className={`v ${b.live.room < 5 ? "dn" : ""}`} title={`of the ${money(b.live.loss_limit, 0)} live loss limit`}>{money(Math.max(0, b.live.room), 2)}</span>
+                  <span className="l">Limit left</span><span className={`v ${b.live.room != null && b.live.room < 5 ? "dn" : ""}`} title={b.live.room == null ? "no live loss limit" : `of the ${money(b.live.loss_limit, 0)} live loss limit${b.live.loss_period === "today" ? " (today, UTC)" : ""}`}>{b.live.room == null ? "–" : money(Math.max(0, b.live.room), 2)}</span>
                   <span className="l">Live windows</span><span className="v">{b.live.windows_done ? `${b.live.windows_won}/${b.live.windows_done}` : "–"}</span>
                 </div>
               ) : (

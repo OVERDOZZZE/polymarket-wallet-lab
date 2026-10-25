@@ -86,8 +86,9 @@ backend/                     Python package (server, engines, analysis). Entry: 
                              FAK buy before the book reprices; hold or scalp exit; FAK fills on the book at match time
                              (Polymarket clock), own Kraken + Binance futures feeds, sells, signal log (`signals`).
                              Live mode (bots.mode='live', read at start): own Gateway, real FAK buy of paper $ x
-                             live_scale next to each paper entry, live ledger (state `live`; rebuilt from
-                             live_orders by origin, incl. the order log with sign/post ms), live_loss_limit_usd counts open $ as lost,
+                             live_scale (or live_stake_frac x live USDC) next to each paper entry, live ledger (state `live`; rebuilt from
+                             live_orders by origin, incl. the order log with sign/post ms), live_loss_limit_usd (0 = off) and
+                             live_daily_loss_usd (windows started today, UTC) count open $ as lost,
                              live_paused = kill switch. State `live` also has fill counts and `pnl_series` (cumulative settled PnL)
     strategies/late_fav.py   LateFavBot: resting 97-99c bids on the near-certain side in a window's last 2 min, held
                              to settlement, pulled on fast BTC moves (from the old PC's study, reports/)

@@ -30,11 +30,13 @@ moment arrives, before that message is applied. A quiet market fills after `matc
 book; a book reconnect in between fails the order.
 
 Live (bots.mode = 'live', read at start): the paper bot keeps running as the twin, and every paper entry also
-sends a real FAK market buy through the bot's own trading Gateway for paper $ x `live_scale` (at least
-Polymarket's $1), capped at the limit price. Hold-to-settlement only. The live ledger (from the order responses,
+sends a real FAK market buy through the bot's own trading Gateway for paper $ x `live_scale`, or
+`live_stake_frac` x the live USDC balance when that is set (at least Polymarket's $1, at most `live_max_order_usd`),
+capped at the limit price. Hold-to-settlement only. The live ledger (from the order responses,
 the fee taken off in shares as in paper; rebuilt from live_orders on a restart) settles on Polymarket's official
 outcome. A buy is refused once realized live loss + $ still at risk in open windows + the new order would pass
-`live_loss_limit_usd`, so the live account can never lose more than that. `live_paused` stops live buys at once.
+`live_loss_limit_usd` (0 = off), or `live_daily_loss_usd` counting only windows started today (UTC), so the live
+account can never lose more than that. `live_paused` stops live buys at once.
 
 Feeds, books, the price model, settlement on the Chainlink TWAP, persistence and the UI snapshot are the PaperBot
 engine (market_maker.py); this module adds the Kraken and Binance feeds, the signal, FAK orders and sells.
@@ -99,7 +101,9 @@ class FastConfig:
     rebate_share: float = 0.15        # (engine field; takers earn no rebates)
     # live (bots.mode = 'live')
     live_scale: float = 0.2           # live $ = paper $ x this (a $100 live account next to a $500 paper one)
-    live_loss_limit_usd: float = 20.0
+    live_stake_frac: float = 0.0      # > 0: live $ = this x the live USDC balance (instead of paper $ x live_scale)
+    live_loss_limit_usd: float = 20.0  # 0 = off
+    live_daily_loss_usd: float = 0.0  # > 0: the same limit on the windows started today (UTC)
     live_max_order_usd: float = 25.0
     live_paused: bool = False
 
@@ -614,6 +618,19 @@ class FastBot(PaperBot):
         at_risk = sum(w["up_cost"] + w["down_cost"] for w in self.live.values() if w["pnl"] is None)
         return realized, at_risk + self._live_inflight
 
+    def _live_room(self):
+        """(the $ the live account may still lose before a loss limit stops it, that limit's $, 'total' | 'today')."""
+        cfg = self.cfg
+        realized, at_risk = self._live_pnl()
+        rooms = []
+        if cfg.live_loss_limit_usd > 0:
+            rooms.append((cfg.live_loss_limit_usd + realized - at_risk, cfg.live_loss_limit_usd, "total"))
+        if cfg.live_daily_loss_usd > 0:
+            day0 = time.time() // 86400 * 86400
+            today = sum(w["pnl"] for w in self.live.values() if w["pnl"] is not None and w["start"] >= day0)
+            rooms.append((cfg.live_daily_loss_usd + today - at_risk, cfg.live_daily_loss_usd, "today"))
+        return min(rooms) if rooms else (None, None, None)
+
     def _load_live(self):
         """Rebuild the live ledger and order log of the current account from the orders this bot sent."""
         for r in db.q("SELECT ts, slug, outcome, price, amount, latency_ms, error, data FROM live_orders "
@@ -638,8 +655,9 @@ class FastBot(PaperBot):
 
     def _live_buy(self, m, side, limit, usd, sig):
         cfg, gw = self.cfg, self.gw
-        usd_l = min(max(math.floor(usd * cfg.live_scale * 100) / 100, 1.0), cfg.live_max_order_usd)
-        realized, at_risk = self._live_pnl()
+        base = (gw.balance or 0.0) * cfg.live_stake_frac if cfg.live_stake_frac > 0 else usd * cfg.live_scale
+        usd_l = min(max(math.floor(base * 100) / 100, 1.0), cfg.live_max_order_usd)
+        room = self._live_room()[0]
         why = None
         if cfg.live_paused:
             why = "paused"
@@ -647,7 +665,7 @@ class FastBot(PaperBot):
             why = "scalp_not_live"
         elif not gw.enabled:
             why = "no_gateway"
-        elif realized - at_risk - usd_l < -cfg.live_loss_limit_usd - 1e-9:
+        elif room is not None and room - usd_l < -1e-9:
             why = "loss_limit"
         elif gw.balance is not None and gw.balance < usd_l:
             why = "no_cash"
@@ -718,6 +736,7 @@ class FastBot(PaperBot):
         s["mode"] = self.mode
         if self.mode == "live":
             realized, at_risk = self._live_pnl()
+            room, limit, period = self._live_room()
             gw, cfg = self.gw, self.cfg
             done = sorted((w for w in self.live.values() if w["pnl"] is not None), key=lambda w: w["end"])
             series, cum = [[self.account_since or (done[0]["start"] if done else now), 0.0]], 0.0
@@ -727,10 +746,12 @@ class FastBot(PaperBot):
             res = collections.Counter(r["result"] for r in self.live_log)
             fills = [r for r in self.live_log if r["spent"]]
             s["live"] = {"enabled": bool(gw and gw.enabled), "reason": gw.reason if gw else "starting",
-                         "paused": cfg.live_paused, "scale": cfg.live_scale, "loss_limit": cfg.live_loss_limit_usd,
+                         "paused": cfg.live_paused, "scale": cfg.live_scale,
+                         "size": f"{cfg.live_stake_frac * 100:g}% of the wallet" if cfg.live_stake_frac > 0
+                         else f"paper × {cfg.live_scale:g}",
+                         "loss_limit": limit, "loss_period": period,
                          "usdc": gw.balance if gw else None, "realized": realized, "at_risk": at_risk,
-                         "room": cfg.live_loss_limit_usd + realized - at_risk,
-                         "halted": realized <= -cfg.live_loss_limit_usd + 1e-9,
+                         "room": room, "halted": room is not None and room < 1.0,
                          "windows_done": len(done), "windows_won": sum(1 for w in done if w["pnl"] > 0),
                          "spent": sum(w["up_cost"] + w["down_cost"] for w in self.live.values()),
                          "order_ms": sorted(gw.order_lat)[len(gw.order_lat) // 2] if gw and gw.order_lat else None,
