@@ -887,12 +887,18 @@ class ImbMakerBot(GuardMakerBot):
         if not self.gw.enabled:
             self._err(f"live: trading client not ready: {self.gw.reason}")
             return
-        rows = db.q("SELECT order_id FROM live_orders WHERE origin = ? AND order_type = 'limit' AND ts > ? AND "
-                    "(status IS NULL OR status NOT IN ('CANCELLATION', 'rejected'))", (self.bot_id, time.time() - 6 * 3600))
-        ids = [r["order_id"] for r in rows if not str(r["order_id"]).startswith("rejected")]
-        for i in range(0, len(ids), 500):
+        # what is really open (one call), of it what this bot sent; batches within the cancel bucket's burst (120)
+        try:
+            mine = {r["order_id"] for r in db.q("SELECT order_id FROM live_orders WHERE origin = ?", (self.bot_id,))}
+            rows = await self._loop.run_in_executor(self.gw.pool, lambda: [o.model_dump(mode="json") for o in
+                                                                            self.gw.client.list_open_orders().iter_items()])
+            ids = [str(o["id"]) for o in rows if str(o["id"]) in mine]
+        except Exception as e:
+            ids = []
+            self._err(f"live: listing leftovers: {type(e).__name__}: {e}"[:200])
+        for i in range(0, len(ids), 100):
             try:
-                r = await self._loop.run_in_executor(self.gw.pool, self.gw.cancel_batch, ids[i:i + 500])
+                r = await self._loop.run_in_executor(self.gw.pool, self.gw.cancel_batch, ids[i:i + 100])
                 self.lstat["boot_cancelled"] += len(r["canceled"])
             except Exception as e:
                 self._err(f"live: cancelling leftovers: {type(e).__name__}: {e}"[:200])
