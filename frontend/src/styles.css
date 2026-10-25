@@ -47,6 +47,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .mono { font-family: var(--mono); font-size: 0.86em; }
 .up { color: var(--up) !important; }
 .dn { color: var(--down) !important; }
+.warn { color: var(--warn); }
 .muted { color: var(--muted); }
 .t2 { color: var(--text-2); }
 .small { font-size: 0.8rem; }

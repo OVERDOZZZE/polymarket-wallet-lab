@@ -84,6 +84,9 @@ const META: Record<string, Meta> = {
   back_low: { label: "Ticks behind in the third tier", group: "Quoting", step: 1 },
   age_join: { label: "Min age of the best price to join (s)", group: "Quoting", step: 0.05 },
   inv_cap: { label: "Net share cap per window", help: "No Up bids while Up − Down shares bought exceeds this; no Down bids below minus this.", group: "Risk", step: 25 },
+  spend_cap_usd: { label: "Spend cap per window ($, 0 = off)", help: "A window whose fills cost this much is not quoted any more (live: the real fills; paper twin: its own).", group: "Risk", step: 10 },
+  live_merge: { label: "Merge Up + Down pairs into USDC after each window", help: "Frees the cash of matched pairs at once instead of waiting for resolution (gasless, via Polymarket's relayer).", group: "Live" },
+  live_dry_run: { label: "Dry run: live order flow without sending (paper bots, read at start)", help: "Decides, places and cancels against the real books with simulated 30 ms acks; nothing reaches Polymarket.", group: "Live" },
   // live mode (bots.mode = 'live')
   live_paused: { label: "Pause live orders (kill switch)", help: "Takes effect at once; the paper twin keeps trading.", group: "Live" },
   live_scale: { label: "Live size = paper size ×", help: "0.2 = a $100 live account next to a $500 paper one. Orders below $1 are raised to $1.", group: "Live", step: 0.05 },

@@ -69,6 +69,7 @@ class Gateway:
         self.errors = collections.deque(maxlen=20)
         self.reconnects = 0                               # CLOB HTTP/2 connections recycled (see _keepalive)
         self.light = False                                # bot process: poll USDC only (no token balances/positions)
+        self.on_event = None                              # bot process: called on the loop with each user-channel event
 
     # ------------------------------------------------------------------ lifecycle
     def start(self, loop):
@@ -281,6 +282,64 @@ class Gateway:
             t.daemon = True
             t.start()
 
+    def post_limit_batch(self, orders, origin):
+        """A market maker's path: post-only GTC BUY limit orders [(slug, outcome, token, price, shares)], at most 15
+        (one POST /orders), with no balance / order refreshes afterwards (a maker sends thousands per hour; fills
+        come on the user channel). Every order is stored in live_orders. Returns per order {ok, order_id, error,
+        code} in input order, plus sign / post ms."""
+        if not self.enabled:
+            raise RuntimeError(self.reason or "trading is not available")
+        if not self.armed:
+            raise RuntimeError("Trading is not armed.")
+        t0 = time.perf_counter()
+        signed = []
+        for _slug, _outcome, token, price, size in orders:
+            self._check_size(size * price)
+            signed.append(self.client.create_limit_order(token_id=token, price=str(round(price, 4)), size=f"{size:.2f}",
+                                                         side="BUY", post_only=True))
+        t_signed = time.perf_counter()
+        resps, err = None, None
+        try:
+            resps = self.client.post_orders(signed)
+        except Exception as e:
+            err = _api_error(e)
+        t_done = time.perf_counter()
+        sign_ms, post_ms, total_ms = (t_signed - t0) * 1000, (t_done - t_signed) * 1000, (t_done - t0) * 1000
+        self.order_lat.append(total_ms)
+        now, out, rows = time.time(), [], []
+        for i, (slug, outcome, token, price, size) in enumerate(orders):
+            r = resps[i] if resps is not None and i < len(resps) else None
+            ok = bool(r is not None and r.ok)
+            oid = str(r.order_id) if ok else f"rejected-{time.time_ns()}-{i}"
+            e = None if ok else (err or (f"{r.message} ({r.code})" if r is not None else "no response"))
+            code = None if ok else (getattr(r, "code", None) or "error")
+            status = str(r.status) if ok else "rejected"
+            out.append({"ok": ok, "order_id": oid, "error": e, "code": code, "status": status})
+            rows.append((oid, now, origin, slug, token, outcome, "BUY", "limit", price, size, None, status, total_ms, e,
+                         db.dumps({"post_only": True, "batch": len(orders), "sign_ms": round(sign_ms, 2),
+                                   "post_ms": round(post_ms, 1)})))
+        db.many("INSERT OR REPLACE INTO live_orders (order_id, ts, origin, slug, token_id, outcome, side, order_type, "
+                "price, size, amount, status, latency_ms, error, data) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        return {"orders": out, "sign_ms": round(sign_ms, 2), "post_ms": round(post_ms, 1), "total_ms": round(total_ms, 1)}
+
+    def cancel_batch(self, order_ids):
+        """Cancel these orders in one request (allowed while disarmed: cancelling is always safe). No refreshes."""
+        if not self.enabled:
+            raise RuntimeError(self.reason or "trading is not available")
+        t0 = time.perf_counter()
+        r = self.client.cancel_orders(order_ids=list(order_ids))
+        return {"canceled": [str(x) for x in r.canceled], "not_canceled": {str(k): v for k, v in r.not_canceled.items()},
+                "ms": round((time.perf_counter() - t0) * 1000, 1)}
+
+    def merge_max(self, condition_id):
+        """Merge every balanced Up + Down pair of a market back into USDC (gasless, via Polymarket's relayer); blocks
+        until the transaction is final."""
+        if not self.enabled:
+            raise RuntimeError(self.reason or "trading is not available")
+        h = self.client.merge_positions(condition_id=condition_id, amount="max")
+        res = h.wait()
+        return str(getattr(res, "transaction_hash", None) or getattr(res, "status", None) or res)[:120]
+
     def cancel(self, order_id):
         r = self.client.cancel_order(order_id=order_id)
         self.bg.submit(self.refresh_orders)
@@ -448,7 +507,8 @@ class Gateway:
                 # balances move when the fill settles on-chain (MINED / CONFIRMED), not at MATCHED
                 if e.get("status") in ("MATCHED", "MINED", "CONFIRMED", None):
                     self.bg.submit(self.refresh_balances)
-                    self.bg.submit(self.refresh_positions)
+                    if not self.light:
+                        self.bg.submit(self.refresh_positions)
                 if e.get("status") in ("MATCHED", None):
                     self._refresh_soon()
             elif et == "order":
@@ -460,6 +520,11 @@ class Gateway:
                 db.x("UPDATE live_orders SET status = ?, filled = ? WHERE order_id = ?",
                      (e.get("type"), float(e.get("size_matched") or 0), oid))
                 self.publish({"type": "order", "order": e, "orders": list(self.open_orders.values())})
+            if self.on_event and et in ("trade", "order"):
+                try:
+                    self.on_event(e)
+                except Exception as ex:
+                    self._err(f"on_event: {type(ex).__name__}: {ex}")
 
     # ------------------------------------------------------------------ status for the UI
     def status(self):

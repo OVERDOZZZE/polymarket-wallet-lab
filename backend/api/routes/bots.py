@@ -27,7 +27,7 @@ def card(b):
             "fills": t.get("fills"), "maker_fills": t.get("maker_fills"), "taker_fills": t.get("taker_fills"),
             "volume": t.get("volume"), "fees_paid": t.get("fees_paid"),
             "windows_done": s.get("windows_done"), "windows_won": s.get("windows_won"),
-            "live": {**{k: v for k, v in s["live"].items() if k not in ("windows", "log", "pnl_series")},
+            "live": {**{k: v for k, v in s["live"].items() if k not in ("windows", "log", "pnl_series", "orders", "counts")},
                      "pnl_series_": s["live"].get("pnl_series") or []} if s.get("live") else None}
 
 

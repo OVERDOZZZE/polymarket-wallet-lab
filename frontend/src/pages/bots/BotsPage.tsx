@@ -32,7 +32,7 @@ export default function BotsPage() {
               <div className={`pm-ava ${b.live ? "live" : "b"}`} style={{ width: 46, height: 46 }} />
               <div>
                 <div className="pm-name" style={{ fontSize: "1.1rem" }}>{b.name}<LiveBadge on={b.running} /></div>
-                <div className="pm-meta">{b.strategy_label} · {b.live ? <b className="dn">REAL MONEY{b.live.halted ? " · halted" : b.live.paused ? " · paused" : ""}</b> : b.mode} · account #{b.account}</div>
+                <div className="pm-meta">{b.strategy_label} · {b.live ? (b.live.dry ? <b className="warn">DRY RUN</b> : <b className="dn">REAL MONEY{b.live.halted ? " · halted" : b.live.paused ? " · paused" : ""}</b>) : b.mode} · account #{b.account}</div>
               </div>
             </div>
             <div className="bot-card-body">

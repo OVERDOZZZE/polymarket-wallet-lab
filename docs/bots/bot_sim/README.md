@@ -22,6 +22,7 @@ Per-window logs (orders, fills, guard triggers, decisions) for comparing with th
 |---|---|---|---|---|---|
 | `imb-maker` | 2026-10-25 | Dublin | paper | running | spec defaults (B 60, $5k) |
 | `imb-maker-300` | 2026-10-25 | Dublin | paper | running | spec's first live-test sizing (B 5, cap 25, $300) |
+| `imb-maker-live` | 2026-10-25 | Dublin | dry run, then live | | spec phase 2: B 5, cap 25, $100/window, $60 loss limit |
 
 ### imb-maker
 * Created: 2026-10-25 14:23Z · Where: Dublin · Mode: paper · Status: running (systemd pmtool-bot@imb-maker)
@@ -33,7 +34,15 @@ Per-window logs (orders, fills, guard triggers, decisions) for comparing with th
 ### imb-maker-300
 * Created: 2026-10-25 · Where: Dublin · Mode: paper · Status: running (systemd pmtool-bot@imb-maker-300)
 * Config: imb-maker's with bankroll 300, B 5 (5-8 shares per order), inv_cap 25 (BOT_SPEC.md's first live-test
-  sizing; its ~$100 per-window spend cap is not implemented: imb_maker ignores max_window_cost)
+  sizing; its ~$100 per-window spend cap is `spend_cap_usd`, left off here so this bot stays as it started)
 * Why: paper preview of what the small live test would trade, ~1/12 of imb-maker's size
+* Results:
+* Verdict / next:
+
+### imb-maker-live
+* Created: 2026-10-25 · Where: Dublin · Mode: dry run (nothing sent) until the wallet is funded, then live
+* Config: imb-maker-300's (B 5, inv_cap 25) + spend_cap_usd 100, live_loss_limit_usd 60, live_merge on
+* Why: BOT_SPEC.md phase 2, first live test; paper twin in the same process, `imb-maker-300` next to it
+* Setup: `scripts/imb_maker_live.py create | dry | arm | disarm`, then restart its unit; kill switch in Settings -> Live
 * Results:
 * Verdict / next:

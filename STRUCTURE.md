@@ -72,7 +72,7 @@ backend/                     Python package (server, engines, analysis). Entry: 
   bots/
     registry.py              STRATEGIES dict + bot CRUD (DB table bots)
     control.py               start/stop/config/reset a bot process; equity; latency report
-    runner.py                process entry: python -m backend.bots.runner <bot_id>
+    runner.py                process entry: python -m backend.bots.runner <bot_id> (SIGTERM = clean stop)
     replay.py                offline replay of data/recordings through any bot configs (same engine code, virtual
                              clock, scored on official winners): python -m backend.bots.replay --hours 6 --bot <id>
                              (--dir <folder>: another recordings folder, e.g. data/import/btc5m/recordings_dublin)
@@ -98,10 +98,17 @@ backend/                     Python package (server, engines, analysis). Entry: 
                              from its strategy.py (rule_size, BinanceGuard, top_depths, ladders): 13-level ladders on
                              both tokens, top joins the best bid at queue share >= 0.4 else 2 ticks back, Binance
                              futures guard on every trade (no quotes while the guard feed is stale), net cap 300. Own
-                             _requote (no price-model gate). Per-window logs -> data/bots/<id>/windows/ (see §5)
+                             _requote (no price-model gate). Per-window logs -> data/bots/<id>/windows/ (see §5).
+                             Live (mode 'live', read at start; spec phase 2): the same decisions with the live
+                             window's own inventory drive real post-only orders via its own Gateway (batch post /
+                             cancel, fills from user-channel maker_orders by order id, ledger rebuilt from
+                             live_orders), kill switch live_paused, live_loss_limit_usd (worst case of open windows),
+                             spend_cap_usd per window, merge of pairs after each window, cancel-all on stop and of
+                             leftovers at start. live_dry_run (paper mode): the whole live flow, nothing sent
   trading/gateway.py         Gateway singleton on the official SDK `polymarket-client` (SecureClient, CLOB V2 orders,
                              auto wallet type), arm/limits, place/cancel, approvals, user-channel fills,
-                             balances/positions, market pre-warming
+                             balances/positions, market pre-warming. Maker path (no refreshes per order):
+                             post_limit_batch (<= 15 post-only BUYs), cancel_batch, merge_max; on_event hook
   api/
     app.py                   FastAPI app, lifespan (autostart watches, gateway), static SPA serving
     state.py                 server singletons: jobs (JobManager), hub (LiveHub), records() helper
@@ -134,8 +141,9 @@ scripts/geotest_order.py     one post-only $0.05 order + cancel: checks a server
 scripts/maker_latency_test.py  N post-only $0.05 orders + cancels: round trips and when each shows on / leaves the
                              market feed (= takes effect at the engine). Run on the server
 scripts/fast_value_live.py   server: create bot fast-value-live (fast-value's settings) / arm / disarm (mode live|paper)
-scripts/check_imb_maker.py   offline check of imb_maker against docs/bots/bot_sim/strategy.py + the spec's cases
-                             (python -m scripts.check_imb_maker; no network, no DB)
+scripts/check_imb_maker.py   offline check of imb_maker against docs/bots/bot_sim/strategy.py + the spec's cases,
+                             and of its live layer against a fake gateway (python -m scripts.check_imb_maker)
+scripts/imb_maker_live.py    server: create bot imb-maker-live (dry run) / dry / arm / disarm
 scripts/feed_latency_test.py  standalone feed race (Binance/Coinbase/Chainlink: spike race, cross-correlation, TCP
                              connect, SNTP); places no orders. Output -> reports/latency_result.txt (Dublin, 10-23)
 deploy/install.sh            Linux server: install/update systemd services (server, recorder, one unit per bot)
@@ -195,7 +203,7 @@ WAL mode; every process/thread opens its own connection via `db.conn()`. Schema 
 |---|---|---|---|
 | `traders` | id | traders/store.py | tracked wallets: name, wallet, asset, window, coverage (JSON), notes, flags |
 | `trader_events` | id | traders/live.py | live-captured trades/redeems of watched traders (`data` = full event JSON) |
-| `bots` | id | bots/registry.py, control.py | strategy, mode (paper/live), config JSON, current `account` number, `archived` (time, else NULL: hidden from the Bots page and its totals, start refused, runner exits 0; column added to old DBs by `db.ADDED_COLUMNS`). Bots: `crouch-mm` (market_maker), `ml-copy` (ml_maker; `ml-join` (join_copy) deleted 2026-10-23), `crouch-v2` (crouch_v2), `fast-hold` / `fast-scalp` / `fast-value` and `fast-hold-v2` / `fast-scalp-v2` / `fast-value-v2` (fast_player), `late-fav` (late_fav), `imb-maker` / `imb-maker-300` (imb_maker; $5k B 60 / $300 B 5 cap 25; Dublin since 2026-10-25) (guard_maker bots `guard-mm-5m` / `guard-mm-15m` deleted from the server 2026-10-23) |
+| `bots` | id | bots/registry.py, control.py | strategy, mode (paper/live), config JSON, current `account` number, `archived` (time, else NULL: hidden from the Bots page and its totals, start refused, runner exits 0; column added to old DBs by `db.ADDED_COLUMNS`). Bots: `crouch-mm` (market_maker), `ml-copy` (ml_maker; `ml-join` (join_copy) deleted 2026-10-23), `crouch-v2` (crouch_v2), `fast-hold` / `fast-scalp` / `fast-value` and `fast-hold-v2` / `fast-scalp-v2` / `fast-value-v2` (fast_player), `late-fav` (late_fav), `imb-maker` / `imb-maker-300` (imb_maker; $5k B 60 / $300 B 5 cap 25; Dublin since 2026-10-25), `imb-maker-live` (imb_maker live, scripts/imb_maker_live.py) (guard_maker bots `guard-mm-5m` / `guard-mm-15m` deleted from the server 2026-10-23) |
 | `bot_fills` | id; (bot_id, account, ts) | bot process | every (paper) fill incl. maker/taker, rebate, markout. Sells (fast_player scalp) have negative `shares` and `usd` (= net cash received) |
 | `bot_windows` | (bot_id, account, slug) | bot process | per-window settlement record (`data` JSON), upserted until official |
 | `bot_equity` | (bot_id, account, ts) | bot process | portfolio value every 30 s (PnL chart) |

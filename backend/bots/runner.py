@@ -5,6 +5,7 @@ data/bots/<id>/state.json for the UI and obeys data/bots/<id>/control.json.
 """
 import json
 import os
+import signal
 import sys
 import time
 
@@ -35,6 +36,8 @@ def main():
     if other and other not in (os.getpid(), os.getppid()) and pid_alive(other):   # systemd + UI; ppid = venv launcher
         sys.exit(f"bot {bot_id} is already running (pid {other})")
     pid_path.write_text(str(os.getpid()))
+    # SIGTERM (systemctl stop, control.stop's fallback) = a clean stop: a live maker cancels its resting orders first
+    signal.signal(signal.SIGTERM, lambda *_: bot.stop())
     bot.start()
     if not quiet:
         print(f"bot {bot_id} running (pid {os.getpid()}). Ctrl+C to stop.")

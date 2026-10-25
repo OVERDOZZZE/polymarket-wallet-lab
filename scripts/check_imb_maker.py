@@ -4,11 +4,16 @@ cases of docs/bots/bot_sim/BOT_SPEC.md. Offline: no network, no DB.
   .venv\\Scripts\\python -m scripts.check_imb_maker
 
 1. random inputs through docs/bots/bot_sim/strategy.py (Quoter.desired, BinanceGuard) and the port: identical;
-2. spec cases A-G, the quoting clock and the guard case through a real ImbMakerBot (books, ticks, orders).
+2. spec cases A-G, the quoting clock and the guard case through a real ImbMakerBot (books, ticks, orders);
+3. the live layer against a fake gateway (no network): batches, own orders left out of the book, guard cancels,
+   fills from user-channel events (no double count, FAILED reversed), inventory cap, rejection backoff, kill
+   switch, loss limit, end of quoting.
 """
+import asyncio
 import importlib.util
 import random
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from backend.bots import replay
@@ -199,9 +204,155 @@ def cases():
     print(f"guard: {'ok' if not any(f.startswith('guard') for f in FAILS) else 'FAILED'}")
 
 
+class FakeGateway:
+    """Answers like Gateway.post_limit_batch / cancel_batch, records every call."""
+    enabled, reason, balance, reconnects = True, "", 300.0, 0
+
+    def __init__(self):
+        self.pool = self.bg = ThreadPoolExecutor(1)
+        self.posts, self.cancels, self.reject, self.n, self.errors = [], [], set(), 0, []
+
+    def post_limit_batch(self, orders, origin):
+        out = []
+        for _slug, side, _tok, px, _sz in orders:
+            self.n += 1
+            if (side, px) in self.reject:
+                out.append({"ok": False, "order_id": None, "error": "crosses", "code": "post_only_would_cross"})
+            else:
+                out.append({"ok": True, "order_id": f"o{self.n}", "error": None, "code": None, "status": "live"})
+        self.posts.append(list(orders))
+        return {"orders": out, "post_ms": 20.0}
+
+    def cancel_batch(self, ids):
+        self.cancels.append(list(ids))
+        return {"canceled": list(ids), "not_canceled": {}, "ms": 20.0}
+
+
+def live():
+    loop = asyncio.new_event_loop()
+    flush = lambda: loop.run_until_complete(asyncio.sleep(0.05))
+    b, m = new_bot()
+    b.cfg = b.CONFIG.from_dict({**b.cfg.to_dict(), "B": 5.0, "inv_cap": 25.0})
+    gw = b.gw = FakeGateway()
+    b._loop, b.live_on, b._lready = loop, True, True
+    t = (T0 + 100) * 1000.0
+    for k in range(30):
+        fut(b, t - 6000 + k * 200, 100000.0)
+    book(b, m, t - 5000, 0.48, 0.49, 300, 200)
+    act = lambda side=None: [o for o in b.lorders.values() if o["status"] == "live" and (side is None or o["side"] == side)]
+    at(b, t)
+    b._requote(m, t, force=True)
+    flush()
+    sizes = [len(p) for p in gw.posts]
+    up = sorted((o["price"], o["size"]) for o in act("up"))
+    check(sizes == [15, 11], f"live: batches {sizes}, want [15, 11]")
+    check(len(act("up")) == 13 and len(act("down")) == 13, f"live: {len(act('up'))}/{len(act('down'))} live orders")
+    check(up[-1] == (0.48, 5.0) and up[0] == (0.36, 5.0), f"live: Up ladder {up[:1]}..{up[-1:]}")
+    check(sorted(o["price"] for o in act("up")) == sorted(p for p, _ in resting(m, "up", 0)), "live: live != paper prices")
+    # our own orders now show in the book: the decision must not change (they are left out of the share)
+    n_post, n_cancel = len(gw.posts), len(gw.cancels)
+    for o in b.lorders.values():
+        bk = m.books[o["side"]]["bids"]
+        bk[o["price"]] = bk.get(o["price"], 0.0) + o["size"]
+    m.books["up"]["bids"][0.49] = 5.0                  # a level of ours alone above the best: others' best stays 0.48
+    b.lorders[999] = {**act("up")[0], "lid": 999, "price": 0.49, "oid": "mine"}
+    _lv = m.__dict__["lv"]
+    _lv["act"].append(999)
+    at(b, t + 10)
+    b._requote(m, t + 10, force=True)
+    flush()
+    check(len(gw.posts) == n_post, f"live: own orders in the book caused new posts {gw.posts[n_post:]}")
+    check(gw.cancels[n_cancel:] == [["mine"]], f"live: only the stray 0.49 order should be cancelled: {gw.cancels[n_cancel:]}")
+    m.books["up"]["bids"].pop(0.49)
+    # guard: Up live orders cancelled in one batch, Down untouched
+    n_cancel = len(gw.cancels)
+    up_ids = {o["oid"] for o in act("up")}
+    fut(b, t + 20, 99994.0)
+    flush()
+    check(len(gw.cancels) == n_cancel + 1 and set(gw.cancels[-1]) == up_ids, "live: guard did not cancel all Up orders at once")
+    check(not act("up") and len(act("down")) == 13, f"live: after guard {len(act('up'))}/{len(act('down'))}")
+    # a fill: trade event (MATCHED), the order event repeating it, then the trade FAILED
+    o = sorted(act("down"), key=lambda o: -o["price"])[0]
+    trade = {"event_type": "trade", "id": "tr1", "status": "MATCHED",
+             "maker_orders": [{"order_id": o["oid"], "matched_amount": "3", "price": str(o["price"])},
+                              {"order_id": "someone-else", "matched_amount": "50", "price": "0.5"}]}
+    at(b, t + 30)
+    b._on_live_event(trade)
+    b._on_live_event({**trade, "status": "MINED"})
+    b._on_live_event({"event_type": "order", "id": o["oid"], "type": "UPDATE", "size_matched": "3"})
+    w = b.live[m.slug]
+    check(abs(w["down_sh"] - 3) < 1e-9 and abs(w["down_cost"] - 3 * o["price"]) < 1e-9, f"live: fill counted {w}")
+    b._on_live_event({**trade, "status": "FAILED"})
+    check(abs(w["down_sh"]) < 1e-9, f"live: FAILED trade not reversed {w['down_sh']}")
+    # inventory cap: 30 Down shares -> net -30 < -25: Down ladder cancelled
+    b._on_live_event({**trade, "id": "tr2", "maker_orders": [{"order_id": o["oid"], "matched_amount": "5"}]})
+    o2 = sorted(act("down"), key=lambda o: -o["price"])[0]
+    w["down_sh"] += 25
+    w["down_cost"] += 25 * 0.5
+    at(b, t + 40)
+    b._requote(m, t + 40, force=True)
+    flush()
+    check(not act("down"), f"live: Down still quoted at net {w['up_sh'] - w['down_sh']}")
+    # (orders acked only now were already unwanted while in flight and keep that reason)
+    check(all(x["why"] == "cap" for x in b.lorders.values() if x["side"] == "down" and x["csent"] and x["csent"] >= t + 40
+              and x["ack"] is not None and x["ack"] < t + 40), "live: cap cancels not tagged 'cap'")
+    w["down_sh"], w["down_cost"] = 0.0, 0.0
+    # rejection backoff: Up comes back after the guard, its top price is refused, not re-sent for 300 ms
+    gw.reject.add(("up", 0.48))
+    at(b, t + 1100)
+    b._requote(m, t + 1100, force=True)
+    flush()
+    tops = lambda: sum(1 for p in gw.posts for x in p if x[1] == "up" and x[3] == 0.48)
+    n0 = tops()
+    check(n0 >= 1 and len(act("up")) == 12, f"live: Up after guard {len(act('up'))} live, top sent {n0}x")
+    at(b, t + 1200)
+    b._requote(m, t + 1200, force=True)
+    flush()
+    check(tops() == n0, "live: rejected price re-sent inside its backoff")
+    at(b, t + 1450)
+    b._requote(m, t + 1450, force=True)
+    flush()
+    check(tops() == n0 + 1, "live: rejected price not retried after its backoff")
+    gw.reject.clear()                                  # (the retry at +1450 was refused again: backoff to +1750)
+    # kill switch, then the loss limit
+    b.cfg = b.CONFIG.from_dict({**b.cfg.to_dict(), "live_paused": True})
+    at(b, t + 1500)
+    b._requote(m, t + 1500, force=True)
+    flush()
+    check(not act(), f"live: kill switch left {len(act())} orders")
+    b.cfg = b.CONFIG.from_dict({**b.cfg.to_dict(), "live_paused": False})
+    at(b, t + 1760)
+    b._requote(m, t + 1760, force=True)
+    flush()
+    check(len(act()) == 26, f"live: not back after the kill switch ({len(act())})")
+    b.live["btc-updown-5m-1"] = {"slug": "x", "win": 5, "start": 0, "end": 1, "up_sh": 0, "down_sh": 0, "up_cost": 0,
+                                 "down_cost": 0, "pnl": -61.0, "rebate": 0, "fills": 1, "winner": "up", "merge": None}
+    b._tick(t + 1770)
+    at(b, t + 1780)
+    b._requote(m, t + 1780, force=True)
+    flush()
+    check(not act() and b._live_block(None) == "loss_limit", f"live: loss limit left {len(act())} orders")
+    b.live.pop("btc-updown-5m-1")
+    b._tick(t + 1790)
+    # end of quoting: everything cancelled at end - 25 s
+    at(b, t + 1800)
+    b._requote(m, t + 1800, force=True)
+    flush()
+    e = (T0 + 275) * 1000.0
+    for k in range(5):
+        fut(b, e - 1000 + k * 200, 100000.0)
+    at(b, e)
+    b._requote(m, e, force=True)
+    flush()
+    check(not act() and not any(x["status"] == "sending" for x in b.lorders.values()), "live: orders left at end - 25 s")
+    loop.close()
+    print(f"live layer: {'ok' if not any(f.startswith('live') for f in FAILS) else 'FAILED'}")
+
+
 def main():
     fuzz(load_reference())
     cases()
+    live()
     if FAILS:
         sys.exit(f"{len(FAILS)} check(s) failed")
     print("all checks passed")
