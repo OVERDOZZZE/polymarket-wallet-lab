@@ -187,11 +187,15 @@ function PnlCard({ s, points }: { s: any; points: [number, number][] }) {
 function BotStrip({ s }: { s: any }) {
   const t = s.totals || {}, vol = t.volume || 0, done = s.windows_done || 0, won = s.windows_won || 0;
   const mo = s.markout_avg, feed = (s.lat?.clob || [null])[0];
+  const taker = s.signals && s.strategy === "fast_player";
+  const net = (s.trading_pnl || 0) + (s.rebates_settled || 0);
   return <Strip items={[
-    s.signals && s.strategy === "fast_player"
+    taker
       ? { label: "Spikes → orders", value: `${(s.counts?.spikes || 0).toLocaleString()} → ${(s.counts?.orders || 0).toLocaleString()}`, sub: `fees paid ${money(t.fees_paid, 2)}` }
       : { label: "Rebates (est.)", value: money(t.rebate_est, 2), sub: vol ? `${((t.rebate_est || 0) / vol * 1e4).toFixed(0)} bps of volume` : "paid daily by Polymarket" },
     { label: "Trading PnL", value: signed(s.trading_pnl || 0), sub: "settled windows, before rebates", tone: tone(s.trading_pnl) },
+    // makers only: takers earn no rebates, so their net is the trading PnL
+    ...(taker ? [] : [{ label: "Net profit", value: signed(net), sub: `trading + ${money(s.rebates_settled || 0, 2)} rebates, settled`, tone: tone(net) }]),
     { label: "Windows won", value: done ? `${won}/${done}` : "–", sub: done ? `${Math.round(won / done * 100)}% positive` : "none settled yet" },
     { label: "Markout 10s", value: mo === null || mo === undefined ? "–" : `${num(mo, 2, true)}¢`, sub: "negative = getting picked off", tone: tone(mo) },
     { label: "Fills", value: (t.fills || 0).toLocaleString(), sub: `${(t.taker_fills || 0).toLocaleString()} taker` },
