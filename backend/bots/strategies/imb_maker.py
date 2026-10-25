@@ -42,6 +42,8 @@ matched to our order ids, so another bot on the same wallet never mixes in. Safe
   * live_loss_limit_usd: no quoting once settled live trading PnL + the worst case of open windows (the worse side
     wins) reaches minus this; resting orders still filling in flight can take it a little past;
   * on stop (UI, SIGTERM) every live order is cancelled; at start, orders left by an earlier run are cancelled;
+    1 s after a window stops quoting, every order of the account still open in that market is cancelled (a post
+    that failed in transit may have landed; manual orders in that market go too);
   * rejections back off: post-only-would-cross 0.3 s at that price, no balance / errors 2 s for every window; a
     failed cancel request is retried after 0.2 s. Polymarket's per-signer limits (standard tier: 40 orders/s,
     burst 60; 80 cancels/s, burst 120; a batch costs one token per order) leave room: this sends ~10 of each a
@@ -457,8 +459,13 @@ class ImbMakerBot(GuardMakerBot):
         if not self.live_on:
             return
         self._lrisk = self._live_risk()
-        for m in list(self.markets.values()):          # merge the pairs of a closed window
-            w = self.live.get(m.slug)
+        for m in list(self.markets.values()):
+            lv = m.__dict__.get("lv")                  # 1 s after quoting stops: cancel anything still open in this
+            if (lv and lv["lids"] and not lv.get("swept") and self.gw is not None and m.condition   # market (a post that
+                    and now / 1000.0 >= m.end - self.cfg.stop_before_end_s + 1):                   # failed in transit
+                lv["swept"] = True                                                                  # may have landed)
+                self._live_sweep(m)
+            w = self.live.get(m.slug)                  # merge the pairs of a closed window
             if (w is not None and w.get("merge") is None and self.gw is not None and self.cfg.live_merge
                     and now / 1000.0 >= m.end + 5 and min(w["up_sh"], w["down_sh"]) >= 1.0 and m.condition):
                 self._live_merge(m, w)
@@ -732,6 +739,18 @@ class ImbMakerBot(GuardMakerBot):
         self.live_log.append({"ts": time.time(), "kind": kind, "slug": o["slug"], "win": o["win"], "side": o["side"],
                               "price": o["price"], "size": o["size"], "shares": shares, "info": info,
                               "ms": o.get("post_ms")})
+
+    def _live_sweep(self, m):
+        def done(f):
+            try:
+                n = len(f.result()["canceled"])
+                self.lstat["sweep_cancelled"] += n
+                if n:
+                    self._err(f"live sweep {m.slug}: cancelled {n} order(s) still open after quoting stopped")
+            except Exception as e:
+                self.lstat["sweep_errors"] += 1
+                self._err(f"live sweep {m.slug}: {type(e).__name__}: {e}"[:200])
+        self._loop.run_in_executor(self.gw.pool, self.gw.cancel_market, m.condition).add_done_callback(done)
 
     def _live_merge(self, m, w):
         w["merge"] = "sending"

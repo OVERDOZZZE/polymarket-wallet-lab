@@ -327,9 +327,22 @@ class Gateway:
         if not self.enabled:
             raise RuntimeError(self.reason or "trading is not available")
         t0 = time.perf_counter()
-        r = self.client.cancel_orders(order_ids=list(order_ids))
+        try:
+            r = self.client.cancel_orders(order_ids=list(order_ids))
+        except Exception as e:      # the kept-alive connection was closed under us: cancels are safe to resend at once
+            if not _conn_dropped(e):
+                raise
+            self.reconnects += 1
+            r = self.client.cancel_orders(order_ids=list(order_ids))
         return {"canceled": [str(x) for x in r.canceled], "not_canceled": {str(k): v for k, v in r.not_canceled.items()},
                 "ms": round((time.perf_counter() - t0) * 1000, 1)}
+
+    def cancel_market(self, condition_id):
+        """Cancel every open order of this account in one market (a maker's end-of-window sweep)."""
+        if not self.enabled:
+            raise RuntimeError(self.reason or "trading is not available")
+        r = self.client.cancel_market_orders(market=condition_id)
+        return {"canceled": [str(x) for x in r.canceled]}
 
     def merge_max(self, condition_id):
         """Merge every balanced Up + Down pair of a market back into USDC (gasless, via Polymarket's relayer); blocks
