@@ -518,11 +518,11 @@ class Gateway:
                     self._err(f"store trade: {ex}")
                 self.publish({"type": "trade", "trade": e, "slug": slug})
                 # balances move when the fill settles on-chain (MINED / CONFIRMED), not at MATCHED
-                if e.get("status") in ("MATCHED", "MINED", "CONFIRMED", None):
+                # (bot processes: the 10 s poll only; a maker's fills would hit the balance endpoint's rate limit)
+                if e.get("status") in ("MATCHED", "MINED", "CONFIRMED", None) and not self.light:
                     self.bg.submit(self.refresh_balances)
-                    if not self.light:
-                        self.bg.submit(self.refresh_positions)
-                if e.get("status") in ("MATCHED", None):
+                    self.bg.submit(self.refresh_positions)
+                if e.get("status") in ("MATCHED", None) and not self.light:
                     self._refresh_soon()
             elif et == "order":
                 oid = e.get("id")
