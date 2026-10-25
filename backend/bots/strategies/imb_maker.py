@@ -185,8 +185,9 @@ def top_depths(c, size_bb, size_ba, age_bb_s, age_ba_s):
 
 
 def ladders(c, bb, ba, d_up, d_dn, net, allow=(True, True)):
-    """Quoter.desired past its clock check: {(side, px): size}, side 1 = Up bid at px, -1 = Down bid at 1000 - px."""
-    floor_px = round(c.min_price * 1000)
+    """Quoter.desired past its clock check: {(side, px): size}, side 1 = Up bid at px, -1 = Down bid at 1000 - px.
+    Levels above max_price are skipped (still counted in n_levels), levels below min_price end the ladder."""
+    floor_px, cap_px = round(c.min_price * 1000), round(c.max_price * 1000)
     want = {}
     if net <= c.inv_cap and allow[0]:
         top = bb - d_up * TICK
@@ -194,6 +195,8 @@ def ladders(c, bb, ba, d_up, d_dn, net, allow=(True, True)):
             px = top - k * TICK
             if px < floor_px:
                 break
+            if px > cap_px:
+                continue
             want[(1, px)] = rule_size(c.B, px)
     if net >= -c.inv_cap and allow[1]:
         top = ba + d_dn * TICK
@@ -201,6 +204,8 @@ def ladders(c, bb, ba, d_up, d_dn, net, allow=(True, True)):
             px = top + k * TICK
             if px > 1000 - floor_px:
                 break
+            if 1000 - px > cap_px:
+                continue
             want[(-1, px)] = rule_size(c.B, px)
     return want
 
@@ -556,10 +561,10 @@ class ImbMakerBot(GuardMakerBot):
             return "loss_limit"
         return None
 
-    def _live_call(self, fn, *args):
-        """Run a gateway call on its order pool; dry run: answer after 30 ms without sending anything."""
+    def _live_call(self, fn, *args, pool=None):
+        """Run a gateway call on its order pool (or `pool`); dry run: answer after 30 ms without sending anything."""
         if self.gw is not None:
-            return self._loop.run_in_executor(self.gw.pool, fn, *args)
+            return self._loop.run_in_executor(pool or self.gw.pool, fn, *args)
         fut = self._loop.create_future()
         self._loop.call_later(0.03, lambda: fut.done() or fut.set_result(fn(*args)))
         return fut
@@ -634,7 +639,7 @@ class ImbMakerBot(GuardMakerBot):
             return
         self.lstat["cancels"] += len(ids)
         fn = self.gw.cancel_batch if self.gw is not None else self._dry_cancel
-        fut = self._live_call(fn, ids)
+        fut = self._live_call(fn, ids, pool=self.gw.cpool if self.gw is not None else None)
         fut.add_done_callback(lambda f, ids=ids: self._live_cancelled(f, ids))
 
     def _live_cancelled(self, f, ids):
@@ -919,7 +924,7 @@ class ImbMakerBot(GuardMakerBot):
         if not ids or self.gw is None or not self.gw.enabled:
             return
         try:
-            r = await asyncio.wait_for(self._loop.run_in_executor(self.gw.pool, self.gw.cancel_batch, ids), 3.0)
+            r = await asyncio.wait_for(self._loop.run_in_executor(self.gw.cpool, self.gw.cancel_batch, ids), 3.0)
             self.lstat["stop_cancelled"] += len(r["canceled"])
         except Exception as e:
             self._err(f"live: cancel on stop: {type(e).__name__}: {e}"[:200])

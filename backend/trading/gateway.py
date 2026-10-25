@@ -52,6 +52,7 @@ class Gateway:
         self.max_order_usd = 500.0
         self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="trade")   # orders / cancels only
         self.bg = ThreadPoolExecutor(max_workers=2, thread_name_prefix="trade-bg")  # refreshes: never delay an order
+        self.cpool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="trade-cancel")  # bot cancels: never queue behind posts
         self.rtt = collections.deque(maxlen=200)          # keep-alive round trips (ms)
         self.order_lat = collections.deque(maxlen=200)    # click-to-ack inside the server (ms)
         self.balance = None

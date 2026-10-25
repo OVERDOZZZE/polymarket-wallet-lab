@@ -70,6 +70,17 @@ def fuzz(ref, n=20000):
             if FAILS:
                 return
     print(f"fuzz: {n} decisions and 500 guard streams identical to strategy.py")
+    # max_price: levels above it are skipped, n_levels still counted from the top
+    pc = im.ImbMakerConfig(min_price=0.15, max_price=0.85, n_levels=7)
+    want = im.ladders(pc, 880, 890, 0, 0, 0.0)
+    up = sorted(px for s, px in want if s == 1)
+    check(up == [820, 830, 840, 850], f"max_price: Up levels {up}, want 0.82..0.85")
+    dn = sorted(1000 - px for s, px in want if s == -1)
+    check(dn == [], f"min_price: Down levels {dn}, want none (0.11 is below 0.15)")
+    want = im.ladders(pc, 100, 110, 0, 0, 0.0)
+    dn = sorted(1000 - px for s, px in want if s == -1)
+    check(dn == [830, 840, 850], f"max_price: Down levels {dn}, want 0.83..0.85")
+    check(not [px for s, px in want if s == 1], "min_price: no Up level below 0.15")
 
 
 # ---------------------------------------------------------------- the bot itself
@@ -209,7 +220,7 @@ class FakeGateway:
     enabled, reason, balance, reconnects = True, "", 300.0, 0
 
     def __init__(self):
-        self.pool = self.bg = ThreadPoolExecutor(1)
+        self.pool = self.bg = self.cpool = ThreadPoolExecutor(1)
         self.posts, self.cancels, self.reject, self.n, self.errors = [], [], set(), 0, []
         self.fail_cancels = 0
         self.open = []

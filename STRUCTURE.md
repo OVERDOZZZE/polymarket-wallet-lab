@@ -96,7 +96,7 @@ backend/                     Python package (server, engines, analysis). Entry: 
                              and keeps it out for pull_ms. Own cancel latency; prints judged at their match time
     strategies/imb_maker.py  ImbMakerBot (subclass of GuardMakerBot), paper only: docs/bots/bot_sim/BOT_SPEC.md ported
                              from its strategy.py (rule_size, BinanceGuard, top_depths, ladders): 13-level ladders on
-                             both tokens, top joins the best bid at queue share >= 0.4 else 2 ticks back, Binance
+                             both tokens (levels below min_price end a ladder, above max_price are skipped), top joins the best bid at queue share >= 0.4 else 2 ticks back, Binance
                              futures guard on every trade (no quotes while the guard feed is stale), net cap 300. Own
                              _requote (no price-model gate). Per-window logs -> data/bots/<id>/windows/ (see §5).
                              Live (mode 'live', read at start; spec phase 2): the same decisions with the live
@@ -108,7 +108,8 @@ backend/                     Python package (server, engines, analysis). Entry: 
   trading/gateway.py         Gateway singleton on the official SDK `polymarket-client` (SecureClient, CLOB V2 orders,
                              auto wallet type), arm/limits, place/cancel, approvals, user-channel fills,
                              balances/positions, market pre-warming. Maker path (no refreshes per order):
-                             post_limit_batch (<= 15 post-only BUYs), cancel_batch, merge_max; on_event hook
+                             post_limit_batch (<= 15 post-only BUYs), cancel_batch, merge_max; on_event hook.
+                             Pools: pool (orders), cpool (bot cancels, never behind posts), bg (refreshes, merges)
   api/
     app.py                   FastAPI app, lifespan (autostart watches, gateway), static SPA serving
     state.py                 server singletons: jobs (JobManager), hub (LiveHub), records() helper

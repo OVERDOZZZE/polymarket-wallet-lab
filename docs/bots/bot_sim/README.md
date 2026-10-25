@@ -44,5 +44,10 @@ Per-window logs (orders, fills, guard triggers, decisions) for comparing with th
 * Config: imb-maker-300's (B 5, inv_cap 25) + spend_cap_usd 100, live_loss_limit_usd 60, live_merge on
 * Why: BOT_SPEC.md phase 2, first live test; paper twin in the same process, `imb-maker-300` next to it
 * Setup: `scripts/imb_maker_live.py create | dry | arm | disarm`, then restart its unit; kill switch in Settings -> Live
+* 2026-10-25 ~21:35Z: imb_join 1.01 (never joins the best bid), n_levels 13, live_loss_limit_usd 140, reconcile /
+  order budget fixes. Live fills marked out -4.2 c/share at 60 s before, paper twin +0.3 c.
+* 2026-10-25 (v3): quote only 15-85c (`min_price 0.15`, `max_price 0.85`; fills at <= 15c / >= 85c lost ~8.8 c/share),
+  `n_levels 7` (one taker swept many levels: net hit -54 vs cap 25), cancels on their own gateway pool `cpool`
+  (most losses were fills landing while our cancel was in flight, ~285 ms p50).
 * Results:
 * Verdict / next:
