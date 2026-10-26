@@ -321,7 +321,8 @@ the home PC are separate.
   subscription gets an error message and then silence: the engine (`market_maker._coinbase`) and the recorder switch to
   the `matches` channel (same trades; bid/ask rebuilt from the maker side). Diagnostics shows "connected (matches)".
 * Daily loss limit (fast_player `max_daily_loss_frac` × bankroll, from the value at local midnight): once passed, no new
-  entries until midnight (signal result `daily_loss`). The bot page shows a banner and a "Reset daily limit" button.
+  entries until midnight (signal result `daily_loss`). The bot page shows a banner and a "Reset daily limit" button. Off in live mode (the paper
+  ledger only drives the signal; `live_daily_loss_usd` guards the wallet).
 * The CLOB ends an HTTP/2 connection after 10,000 requests (GOAWAY, last_stream_id 19999); the gateway keep-alive
   reconnects at once and counts it (`reconnects`) instead of logging an error.
 

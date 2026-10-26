@@ -36,7 +36,8 @@ capped at the limit price. Hold-to-settlement only. The live ledger (from the or
 the fee taken off in shares as in paper; rebuilt from live_orders on a restart) settles on Polymarket's official
 outcome. A buy is refused once realized live loss + $ still at risk in open windows + the new order would pass
 `live_loss_limit_usd` (0 = off), or `live_daily_loss_usd` counting only windows started today (UTC), so the live
-account can never lose more than that. `live_paused` stops live buys at once.
+account can never lose more than that; the paper `max_daily_loss_frac` limit is off in live mode. `live_paused`
+stops live buys at once.
 
 Feeds, books, the price model, settlement on the Chainlink TWAP, persistence and the UI snapshot are the PaperBot
 engine (market_maker.py); this module adds the Kraken and Binance feeds, the signal, FAK orders and sells.
@@ -595,6 +596,11 @@ class FastBot(PaperBot):
 
     def _reserved(self):
         return sum(o.budget for o in self.pending if o.buy)
+
+    def _daily_limit_usd(self):
+        """Live: the paper twin only drives the signal, so its paper daily limit must not stop live entries (paper
+        equity compounds far past the bankroll the limit is a fraction of); the live loss limits guard the wallet."""
+        return None if getattr(self, "mode", "paper") == "live" else super()._daily_limit_usd()
 
     # ------------------------------------------------------------------ live
     def _live_win(self, slug, win, start):
