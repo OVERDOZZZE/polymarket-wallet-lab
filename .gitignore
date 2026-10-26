@@ -16,3 +16,6 @@ frontend/dist/
 __pycache__/
 *.pyc
 *.zip
+# regenerable study files
+reports/fast_allowance/jobs/
+reports/fast_allowance/probe.json

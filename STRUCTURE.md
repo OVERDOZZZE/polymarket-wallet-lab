@@ -85,6 +85,8 @@ backend/                     Python package (server, engines, analysis). Entry: 
     strategies/fast_player.py  FastBot: latency taker (docs/bots/fast_player/FAST_PLAYER_SPEC.md rebuilt): Coinbase/Kraken/Binance spike ->
                              FAK buy before the book reprices; hold or scalp exit; FAK fills on the book at match time
                              (Polymarket clock), own Kraken + Binance futures feeds, sells, signal log (`signals`).
+                             Paper fill models: latency_ms (default, ~95% fills), latency_samples (random measured
+                             delays) or queue_max_ms > 0 (queue model: matches live misses, reports/fast_allowance).
                              Live mode (bots.mode='live', read at start): own Gateway, real FAK buy of paper $ x
                              live_scale (or live_stake_frac x live USDC) next to each paper entry, live ledger (state `live`; rebuilt from
                              live_orders by origin, incl. the order log with sign/post ms), live_loss_limit_usd (0 = off) and
@@ -143,6 +145,9 @@ scripts/geotest_order.py     one post-only $0.05 order + cancel: checks a server
 scripts/maker_latency_test.py  N post-only $0.05 orders + cancels: round trips and when each shows on / leaves the
                              market feed (= takes effect at the engine). Run on the server
 scripts/fast_value_live.py   server: create bot fast-value-live (fast-value's settings) / arm / disarm (mode live|paper)
+scripts/fast_value_wide.py   server: create paper bots fast-value-q / -wide / -wider (allowance test, queue fill model)
+scripts/fast_live_probe.py   recorded book around each real fast-value-live order (reports/fast_allowance/probe.json)
+scripts/fast_allowance_sweep.py  fast_player replay sweeps in crash-safe per-block subprocess jobs (+ _report.py table)
 scripts/check_imb_maker.py   offline check of imb_maker against docs/bots/bot_sim/strategy.py + the spec's cases,
                              and of its live layer against a fake gateway (python -m scripts.check_imb_maker)
 scripts/imb_maker_live.py    server: create bot imb-maker-live (dry run) / dry / arm / disarm
@@ -158,6 +163,7 @@ docs/bots/bot_sim/           imb_maker's folder: BOT_SPEC.md (the study's build 
                              (its reference decision code; imb_maker.py is the port)
 docs/TRADER_RE_PLAN.md       reference (suggestions only) for re-doing the CrouchPredictions / machinelearned study:
                              how to collect each data source, analysis options, bot-building options
+reports/fast_allowance/      why live FAKs miss (Polymarket's taker delay) and the allowance sweep: README.md
 reports/                     study outputs: ULTIMATE_REPORT.md + ult_*.txt (old logger PC's 64 h study),
                              latency_result.txt (feed race from Dublin)
 archive/v1-2026-10-21/       old Streamlit code, raw v1 files (profiles/, bot_data/, legacy data/) — read-only
@@ -231,6 +237,7 @@ WAL mode; every process/thread opens its own connection via `db.conn()`. Schema 
 | `data/recordings/recorder.log` | recorder output | |
 | `data/import/btc5m/` | the old logger PC's export (2026-10-19..22, 64 h): `INVENTORY.md` (read first), `raw_db/btc5m.db` (all feeds, its paper bots, windows), `bot_dbs/` (its live bots), `code/` (old project + analysis, `analysis/data/*.pkl` need pandas >= 3), `extracts/` | read-only input |
 | `data/import/btc5m/recordings_{home,dublin}/` | that data converted to the recorder format by scripts/import_btc5m.py | replay with `--dir` |
+| `data/recordings_server/` | copy of the Dublin server's recordings 10-24 00Z..10-26 05Z (scp) | replay with `--dir` (fast_allowance study) |
 
 ## 5b. Production server (Linux, AWS Dublin)
 Since 2026-10-22 the app also runs on an AWS EC2 server in Dublin (eu-west-1, Ubuntu 24.04, ~23 ms to

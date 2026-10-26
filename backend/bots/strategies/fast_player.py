@@ -29,6 +29,16 @@ clock and fills against the book as it stood then - the book we hold when the fi
 moment arrives, before that message is applied. A quiet market fills after `match_wait_ms` against the current
 book; a book reconnect in between fails the order.
 
+Real FAKs are much slower (reports/fast_allowance/README.md): Polymarket answers takers in ~0.2-3.5 s (median ~0.9 s
+on 10-24..26; post-only orders 20-80 ms), the order matches against the book as it stands when the response comes
+back, and that moment is not random: it comes 0-0.7 s after the makers pulled the asks at the order's limit (they
+see the same BTC move). So live fills ~10% where the paper above fills ~95%. Two closer models:
+  * `latency_samples` (ms): each order draws its delay from these (+ `latency_ms`). Still ~3x too many fills,
+    because a random delay misses that pairing;
+  * `queue_max_ms` > 0 (wins over the above): the order waits until no ask is left at its limit, then matches
+    a draw from `queue_gap_samples` ms later (the book may have come back), or at `queue_max_ms` if the asks
+    stay. With 2200 ms it fills ~10% of fast-value-live's real orders, agreeing with live on ~90% of them.
+
 Live (bots.mode = 'live', read at start): the paper bot keeps running as the twin, and every paper entry also
 sends a real FAK market buy through the bot's own trading Gateway for paper $ x `live_scale`, or
 `live_stake_frac` x the live USDC balance when that is set (at least Polymarket's $1, at most `live_max_order_usd`),
@@ -47,6 +57,7 @@ import collections
 import dataclasses
 import json
 import math
+import random
 import time
 from datetime import datetime
 
@@ -97,6 +108,9 @@ class FastConfig:
     spot_source: str = "coinbase"     # spot level for the model: coinbase | binance | blend (adjusted to Chainlink)
     vol_floor: float = 0.4
     latency_ms: float = 50.0          # order -> matching engine (Dublin: ~44 ms round trip)
+    latency_samples: tuple = ()       # measured live FAK round trips (ms): each order draws one, + latency_ms
+    queue_max_ms: float = 0.0         # > 0: queue model (see the module doc); the order matches at the latest this late
+    queue_gap_samples: tuple = (0, 60, 100, 140, 165, 200, 245, 320, 375, 485, 565, 725, 990)   # ms after the asks go
     match_wait_ms: float = 1500.0
     fee_rate: float = 0.07            # used only when the market lists none
     rebate_share: float = 0.15        # (engine field; takers earn no rebates)
@@ -120,11 +134,12 @@ class FastConfig:
 
 class Fak:
     """A fill-and-kill order on its way to the matching engine. Buys spend `budget` $, sells `shares`."""
-    __slots__ = ("m", "side", "buy", "limit", "budget", "shares", "placed", "match_ts", "sig")
+    __slots__ = ("m", "side", "buy", "limit", "budget", "shares", "placed", "lat", "match_ts", "sig", "gone")
 
-    def __init__(self, m, side, buy, limit, budget, shares, placed, match_ts, sig):
+    def __init__(self, m, side, buy, limit, budget, shares, placed, lat, match_ts, sig):
         self.m, self.side, self.buy, self.limit = m, side, buy, limit
-        self.budget, self.shares, self.placed, self.match_ts, self.sig = budget, shares, placed, match_ts, sig
+        self.budget, self.shares, self.placed, self.lat, self.match_ts, self.sig = budget, shares, placed, lat, match_ts, sig
+        self.gone = False                                     # queue model: the liquidity at the limit was pulled
 
 
 def _st(m):
@@ -147,6 +162,7 @@ class FastBot(PaperBot):
         self.spike = None                                       # the spike in progress
         self._spike_n = 0
         self.pending = []                                       # Fak orders not matched yet
+        self._rng = random.Random(0)                            # latency_samples draws (replays repeat)
         self.signals = collections.deque(maxlen=300)            # one row per spike x window (+ exits)
         self.status["kraken"] = "stopped"
         self.status["binance_fut"] = "stopped"
@@ -435,7 +451,8 @@ class FastBot(PaperBot):
             return "risk_limit" if self.cash - self._reserved() >= floor else "cash"
         usd = math.floor(usd * 100) / 100
         sig["limit"], sig["usd"] = limit, usd
-        self.pending.append(Fak(m, side, True, limit, usd, 0.0, now, self._corr(now) + cfg.latency_ms, sig))
+        lat = self._latency()
+        self.pending.append(Fak(m, side, True, limit, usd, 0.0, now, lat, self._corr(now) + lat, sig))
         if self.gw is not None:
             self._live_buy(m, side, limit, usd, sig)
         st["entries"] += 1
@@ -475,8 +492,9 @@ class FastBot(PaperBot):
                        "side": side, "move": None, "spike": None, "ask": None, "fair": None, "edge": round(gain, 4),
                        "limit": bid, "usd": None, "result": "exit", "filled": None, "avg": None}
                 self.signals.append(sig)
-                self.pending.append(Fak(m, side, False, bid, 0.0, math.floor(sh * 100) / 100, now,
-                                        self._corr(now) + cfg.latency_ms, sig))
+                lat = self._latency()
+                self.pending.append(Fak(m, side, False, bid, 0.0, math.floor(sh * 100) / 100, now, lat,
+                                        self._corr(now) + lat, sig))
                 self.counts["exits"] += 1
                 return
 
@@ -491,6 +509,8 @@ class FastBot(PaperBot):
                 for o in [o for o in self.pending if o.m is m and ts > o.match_ts]:
                     self._execute(o, self.clock() * 1000.0)       # the book as it stood at the match time
         super()._on_book_msg(m, d)
+        if self.pending and self.cfg.queue_max_ms > 0:
+            self._queue_check(m)
         mid = m.mid("up")
         mids = _st(m)["mids"]
         if mid is not None and (not mids or mids[-1][1] != mid):
@@ -502,7 +522,7 @@ class FastBot(PaperBot):
     def _tick(self, now):
         super()._tick(now)
         cfg = self.cfg
-        for o in [o for o in self.pending if now >= o.placed + cfg.latency_ms + cfg.match_wait_ms]:
+        for o in [o for o in self.pending if now >= o.placed + o.lat + cfg.match_wait_ms]:
             if o.m.book_ok and now - o.m.last_book_ms < cfg.feed_stale_ms:
                 self._execute(o, now)                             # market was quiet: the book is current
             else:
@@ -593,6 +613,31 @@ class FastBot(PaperBot):
                "btc": self.cb["mid"], "markout": None}
         self.fills.append(rec)
         self._wq.put(("fill", rec))
+
+    def _latency(self):
+        """This order's delay to the matching engine, ms."""
+        cfg = self.cfg
+        if cfg.queue_max_ms > 0:
+            return cfg.queue_max_ms
+        s = cfg.latency_samples
+        return cfg.latency_ms + (self._rng.choice(s) if s else 0.0)
+
+    def _queue_check(self, m):
+        """Queue model: once nothing is left at an order's limit, it matches a gap later (not at queue_max_ms)."""
+        now = self.clock() * 1000.0
+        for o in self.pending:
+            if o.m is not m or o.gone:
+                continue
+            if o.buy:
+                left = any(px <= o.limit + 1e-9 for px in m.books[o.side]["asks"])
+            else:
+                left = any(px >= o.limit - 1e-9 for px in m.books[o.side]["bids"])
+            if not left:
+                o.gone = True
+                gap = self._rng.choice(self.cfg.queue_gap_samples) if self.cfg.queue_gap_samples else 0.0
+                if now + gap < o.placed + o.lat:
+                    o.lat = now + gap - o.placed
+                    o.match_ts = self._corr(now) + gap
 
     def _reserved(self):
         return sum(o.budget for o in self.pending if o.buy)
