@@ -93,9 +93,10 @@ class Writer(threading.Thread):
 W = Writer()
 
 
-async def stream(url, src, subscribe=None, ping=None, keep=None, until=None, refused=None):
+async def stream(url, src, subscribe=None, ping=None, keep=None, until=None, refused=None, silent_s=None):
     """Reconnecting websocket -> writer. `keep(raw)` filters, `until()` ends it. `refused` = (text, subscribe):
-    a message containing `text` means the subscription was refused; send the fallback `subscribe` instead."""
+    a message containing `text` means the subscription was refused; send the fallback `subscribe` instead.
+    `silent_s`: reconnect when nothing was kept for that long (RTDS can stay open and stop sending one symbol)."""
     import websockets
     backoff = 0.2
     while until is None or not until():
@@ -105,6 +106,7 @@ async def stream(url, src, subscribe=None, ping=None, keep=None, until=None, ref
                 if subscribe:
                     await ws.send(json.dumps(subscribe))
                 backoff, last_ping = 0.2, time.time()
+                last_kept = time.time()
                 while until is None or not until():
                     try:
                         raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
@@ -115,8 +117,11 @@ async def stream(url, src, subscribe=None, ping=None, keep=None, until=None, ref
                             continue
                         if keep is None or keep(raw):
                             W.put(src, raw)
+                            last_kept = time.time()
                     except asyncio.TimeoutError:
                         pass
+                    if silent_s and time.time() - last_kept > silent_s:
+                        raise TimeoutError(f"nothing kept for {silent_s:g} s, reconnecting")
                     if ping and time.time() - last_ping > 9:
                         await ws.send(ping)
                         last_ping = time.time()
@@ -187,7 +192,7 @@ async def main():
                                                                    "event_trigger": "bbo"}},
                keep=lambda r: '"ticker"' in (r if isinstance(r, str) else r.decode("utf-8", "replace"))),
         stream(RTDS_WS, "cl", {"action": "subscribe", "subscriptions": cl_subs},
-               keep=lambda r: "btc/usd" in (r if isinstance(r, str) else r.decode("utf-8", "replace"))),
+               keep=lambda r: "btc/usd" in (r if isinstance(r, str) else r.decode("utf-8", "replace")), silent_s=20),
         stream(RTDS_WS, "act", {"action": "subscribe", "subscriptions": [{"topic": "activity", "type": "trades"}]},
                keep=lambda r: "btc-updown" in (r if isinstance(r, str) else r.decode("utf-8", "replace"))),
     ]
