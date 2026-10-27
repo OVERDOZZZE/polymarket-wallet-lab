@@ -129,6 +129,10 @@ class Bot:
 
     async def book_ws(self, tokens):
         while not self.stop.is_set():
+            # a book is only trusted from this connection's snapshot on: while the socket is down (Polymarket drops
+            # slow consumers every few minutes) there is no book, so no signal can fill against frozen prices
+            for t in tokens:
+                self.books.pop(t, None)
             try:
                 async with websockets.connect(C.CLOB_MARKET_WS, ping_interval=20, ping_timeout=20,
                                               max_size=2 ** 24) as ws:
@@ -150,6 +154,9 @@ class Bot:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                for t in tokens:
+                    self.books.pop(t, None)
+                self.stats["book_reconnects"] += 1
                 log.warning("book socket: %s: %s (reconnecting)", type(e).__name__, e)
                 await asyncio.sleep(1.0)
 
