@@ -218,9 +218,8 @@ class Bot:
         slug = m["slug"]
         try:
             await asyncio.sleep(C.SIM_LATENCY_MS / 1000.0)
-            fee1 = C.FEE_RATE * ask * (1 - ask)
-            want = max(C.MIN_SHARES, math.floor(C.FEE_TARGET_USD / fee1))
-            budget = min(C.MAX_ORDER_USD, C.MAX_WINDOW_USD - self.ledger.window_spent(slug), self.ledger.cash)
+            want = max(C.MIN_SHARES, math.floor(C.ORDER_USD / ask))
+            budget = min(C.ORDER_USD * 1.1, C.MAX_WINDOW_USD - self.ledger.window_spent(slug), self.ledger.cash)
             want = min(want, math.floor(budget / (ask * (1 + C.FEE_RATE * (1 - ask)))))
             limit = round(ask + C.SLIPPAGE, 3)
             book = self.books.get(m[side])
@@ -315,6 +314,8 @@ class Bot:
         log.info("spikebot start: cash %.2f, theta %.2f bps / %d ms, latency %d ms, price %.2f-%.2f",
                  self.ledger.cash, C.THETA_BPS, C.SIGNAL_WINDOW_MS, C.SIM_LATENCY_MS, C.P_MIN, C.P_MAX)
         self.ledger.event("start", f"cash {self.ledger.cash:.2f}")
+        self.ledger.event("config", json.dumps({k: v for k, v in vars(C).items()
+                                                if k.isupper() and isinstance(v, (int, float, str))}))
         tasks = [asyncio.create_task(c) for c in (self.markets_loop(), self.binance_loop(), self.settler_loop(),
                                                   self.status_loop())]
         await self.stop.wait()

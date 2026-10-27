@@ -31,7 +31,8 @@ THETA_BPS = 1.5
 WINDOW_S = 300                 # BTC 5-minute windows only
 T_MIN_S = 5                    # no entries in a window's first 5 s
 T_END_S = 15                   # ... nor in its last 15 s
-P_MIN, P_MAX = 0.15, 0.85      # favoured token's best ask must be inside this range
+P_MIN, P_MAX = 0.15, 0.60      # favoured token's best ask must be inside this range (the edge is in the cheaper
+                               # token: backtest +12..19 c/share at 0.15-0.60 vs +1..4 c at 0.60-0.85)
 MAX_REPRICE = 0.02             # skip when that ask already rose > 2 c since the move began (quote no longer stale)
 COOLDOWN_S = 5                 # at most one entry per 5 s per window
 
@@ -40,8 +41,8 @@ SIM_LATENCY_MS = 500           # Polymarket holds taker orders ~0.2-2.7 s (media
 SLIPPAGE = 0.02                # limit price = signal ask + 2 c; book levels above it are not taken
 FEE_RATE = 0.07                # taker fee per share = FEE_RATE * p * (1 - p), paid in USDC
 
-# sizing: constant taker fee per order, like both traders (shares ~ 1 / (p (1 - p))): 40 shares at 0.50
-FEE_TARGET_USD = 0.70
+# sizing: a fixed $ amount per order (the traders' constant-fee rule, shares ~ 1 / (p (1 - p)), put the most money
+# on the expensive tokens, where the backtest edge is smallest)
+ORDER_USD = 20.0
 MIN_SHARES = 5.0               # Polymarket's minimum order size
-MAX_ORDER_USD = 40.0
 MAX_WINDOW_USD = 120.0         # total spent in one window
