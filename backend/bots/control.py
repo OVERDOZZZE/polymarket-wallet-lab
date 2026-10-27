@@ -76,6 +76,8 @@ def save_config(bot_id, changes):
     bot = registry.get_bot(bot_id)
     cfg_cls = registry.strategy(bot["strategy"])[1]
     cfg = cfg_cls.from_dict({**bot["config"], **changes}).to_dict()
+    known = set(cfg)                      # keys this code does not know (a newer version's) are kept as given
+    cfg.update({k: v for k, v in {**bot["config"], **changes}.items() if k not in known})
     db.x("UPDATE bots SET config = ? WHERE id = ?", (db.dumps(cfg), bot_id))
     diff = [f"{k} {bot['config'].get(k)} → {v}" for k, v in cfg.items() if bot["config"].get(k) != v
             and not (isinstance(v, (list, tuple)) and list(v) == list(bot["config"].get(k) or []))]

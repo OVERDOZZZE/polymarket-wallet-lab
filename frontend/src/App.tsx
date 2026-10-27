@@ -41,7 +41,7 @@ function TopBar() {
         <span className="brand-mark">
           <svg width="16" height="16" viewBox="0 0 32 32"><path d="M6 23l7-8 5 4 8-10" stroke="#fff" strokeWidth="4" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
         </span>
-        Wallet Lab
+        <span className="brand-text">Wallet Lab</span>
       </NavLink>
       <nav className="nav">
         <NavLink to="/trade">Trade</NavLink>
@@ -49,12 +49,12 @@ function TopBar() {
         <NavLink to="/traders">Traders</NavLink>
       </nav>
       <span className="spacer" />
-      <div style={{ position: "relative" }}>
+      <div className="jobs" style={{ position: "relative" }}>
         <button className="btn ghost sm" onClick={() => setOpen(!open)} title="Background downloads and analyses">
           {active.length ? <><span className="dot pulse" style={{ color: "var(--accent)" }} />{active.length} job{active.length > 1 ? "s" : ""} running</> : "Jobs"}
         </button>
         {open && (
-          <div className="card" style={{ position: "absolute", right: 0, top: 40, width: 360, zIndex: 30 }}>
+          <div className="card jobs-pop">
             <div className="card-title">Background jobs
               <span className="spacer" />
               {jobs.some((j) => j.status !== "running") && <button className="btn ghost sm" onClick={() => api.post("/api/jobs/clear")}>Clear</button>}

@@ -85,8 +85,6 @@ backend/                     Python package (server, engines, analysis). Entry: 
     strategies/fast_player.py  FastBot: latency taker (docs/bots/fast_player/FAST_PLAYER_SPEC.md rebuilt): Coinbase/Kraken/Binance spike ->
                              FAK buy before the book reprices; hold or scalp exit; FAK fills on the book at match time
                              (Polymarket clock), own Kraken + Binance futures feeds, sells, signal log (`signals`).
-                             Paper fill models: latency_ms (default, ~95% fills), latency_samples (random measured
-                             delays) or queue_max_ms > 0 (queue model: matches live misses, reports/fast_allowance).
                              Live mode (bots.mode='live', read at start): own Gateway, real FAK buy of paper $ x
                              live_scale (or live_stake_frac x live USDC) next to each paper entry, live ledger (state `live`; rebuilt from
                              live_orders by origin, incl. the order log with sign/post ms), live_loss_limit_usd (0 = off) and
@@ -97,6 +95,10 @@ backend/                     Python package (server, engines, analysis). Entry: 
     strategies/guard_maker.py  GuardMakerBot: two-sided post-only bids around fair (PaperBot quoting) + the fast
                              player's spike signal (subclass of FastBot): a spike cancels the threatened side at once
                              and keeps it out for pull_ms. Own cancel latency; prints judged at their match time
+    strategies/stale_taker.py  StaleTakerBot (subclass of FastBot), paper only: Binance futures 1 s move >= spike_bps
+                             -> FAK buy of the favoured token, 10 shares at ask + 2 ticks, max 10 per window, held to
+                             settlement; each order's latency drawn from fast-value-live's real FAK latencies
+                             (LATENCY_Q, p50 ~0.7 s). Mode live ignored. docs/bots/stale_taker/README.md
     strategies/imb_maker.py  ImbMakerBot (subclass of GuardMakerBot), paper only: docs/bots/bot_sim/BOT_SPEC.md ported
                              from its strategy.py (rule_size, BinanceGuard, top_depths, ladders): 13-level ladders on
                              both tokens (levels below min_price end a ladder, above max_price are skipped), top joins the best bid at queue share >= 0.4 else 2 ticks back, Binance
@@ -107,12 +109,26 @@ backend/                     Python package (server, engines, analysis). Entry: 
                              cancel, fills from user-channel maker_orders by order id, ledger rebuilt from
                              live_orders), kill switch live_paused, live_loss_limit_usd (worst case of open windows),
                              spend_cap_usd per window, merge of pairs after each window, cancel-all on stop and of
-                             leftovers at start. live_dry_run (paper mode): the whole live flow, nothing sent
+                             leftovers at start. live_dry_run (paper mode): the whole live flow, nothing sent.
+                             live_requote_wait_ack: a re-priced order is cancelled once its post is answered
+                             (Polymarket holds a post's answer 0.6-9 s when its cancel arrives first; urgent cancels
+                             still go in flight); live_max_inflight caps posts awaiting an answer; a post lost in
+                             transit stays tracked ('unconfirmed'), a reconcile re-adopts 'rejected' orders still open;
+                             live_stall_ms: no new posts while the market's feed is silent / a post waits that long
+                             (Polymarket's exchange-wide pauses); spend_cap_hard: past the cap only until flat once
   trading/gateway.py         Gateway singleton on the official SDK `polymarket-client` (SecureClient, CLOB V2 orders,
                              auto wallet type), arm/limits, place/cancel, approvals, user-channel fills,
                              balances/positions, market pre-warming. Maker path (no refreshes per order):
                              post_limit_batch (<= 15 post-only BUYs), cancel_batch, merge_max; on_event hook.
                              Pools: pool (orders), cpool (bot cancels, never behind posts), bg (refreshes, merges)
+  trading/fastorders.py      FastOrders on a Gateway's client: order id = EIP-712 hash computed at signing (checked
+                             against the exchange's), one order per request on the warm HTTP/2 connection (48
+                             threads), cancels by id at once on their own 32 threads, also while the post is in
+                             flight (the exchange then refuses the late post: "Already canceled"). Used by imb_maker
+                             live_fast. Probe 2026-10-26: order / cancel on the book ~15-20 ms after sending.
+                             cancel_gw: cancels on a second Gateway's client (own connection), resent once when the
+                             connection drops; post errors classified (code transport = sent, may rest; rate_limited);
+                             `rl` = Poly-RateLimit-* headers seen (tier, min remaining, warnings, 429s)
   api/
     app.py                   FastAPI app, lifespan (autostart watches, gateway), static SPA serving
     state.py                 server singletons: jobs (JobManager), hub (LiveHub), records() helper
@@ -145,11 +161,15 @@ scripts/geotest_order.py     one post-only $0.05 order + cancel: checks a server
 scripts/maker_latency_test.py  N post-only $0.05 orders + cancels: round trips and when each shows on / leaves the
                              market feed (= takes effect at the engine). Run on the server
 scripts/fast_value_live.py   server: create bot fast-value-live (fast-value's settings) / arm / disarm (mode live|paper)
-scripts/fast_value_wide.py   server: create paper bots fast-value-q / -wide / -wider (allowance test, queue fill model)
-scripts/fast_live_probe.py   recorded book around each real fast-value-live order (reports/fast_allowance/probe.json)
-scripts/fast_allowance_sweep.py  fast_player replay sweeps in crash-safe per-block subprocess jobs (+ _report.py table)
+scripts/order_speed_probe.py server, REAL orders that cannot fill (5.37 sh at 0.02 on the next window, cancelled at
+                             once): post / cancel / in-flight-cancel timings on our clock and the book's -> data/probe/
+scripts/delay_probe.py       server, REAL orders that cannot fill (0.02, active + next window): per request httpx
+                             send / answer times, Poly-RateLimit headers, book appearance, and (--pcap, tcpdump on the
+                             box) the answer's first packet on the wire; tests seq / burst / bot-like load / cancel in
+                             flight on a second connection -> data/probe/delay-*.json. Proved the held answers (10-27)
 scripts/check_imb_maker.py   offline check of imb_maker against docs/bots/bot_sim/strategy.py + the spec's cases,
                              and of its live layer against a fake gateway (python -m scripts.check_imb_maker)
+scripts/check_stale_taker.py offline check of stale_taker's entry rules, latency draw and paper fill
 scripts/imb_maker_live.py    server: create bot imb-maker-live (dry run) / dry / arm / disarm
 scripts/feed_latency_test.py  standalone feed race (Binance/Coinbase/Chainlink: spike race, cross-correlation, TCP
                              connect, SNTP); places no orders. Output -> reports/latency_result.txt (Dublin, 10-23)
@@ -163,7 +183,6 @@ docs/bots/bot_sim/           imb_maker's folder: BOT_SPEC.md (the study's build 
                              (its reference decision code; imb_maker.py is the port)
 docs/TRADER_RE_PLAN.md       reference (suggestions only) for re-doing the CrouchPredictions / machinelearned study:
                              how to collect each data source, analysis options, bot-building options
-reports/fast_allowance/      why live FAKs miss (Polymarket's taker delay) and the allowance sweep: README.md
 reports/                     study outputs: ULTIMATE_REPORT.md + ult_*.txt (old logger PC's 64 h study),
                              latency_result.txt (feed race from Dublin)
 archive/v1-2026-10-21/       old Streamlit code, raw v1 files (profiles/, bot_data/, legacy data/) — read-only
@@ -211,7 +230,7 @@ WAL mode; every process/thread opens its own connection via `db.conn()`. Schema 
 |---|---|---|---|
 | `traders` | id | traders/store.py | tracked wallets: name, wallet, asset, window, coverage (JSON), notes, flags |
 | `trader_events` | id | traders/live.py | live-captured trades/redeems of watched traders (`data` = full event JSON) |
-| `bots` | id | bots/registry.py, control.py | strategy, mode (paper/live), config JSON, current `account` number, `archived` (time, else NULL: hidden from the Bots page and its totals, start refused, runner exits 0; column added to old DBs by `db.ADDED_COLUMNS`). Bots: `crouch-mm` (market_maker), `ml-copy` (ml_maker; `ml-join` (join_copy) deleted 2026-10-23), `crouch-v2` (crouch_v2), `fast-hold` / `fast-scalp` / `fast-value` and `fast-hold-v2` / `fast-scalp-v2` / `fast-value-v2` (fast_player), `late-fav` (late_fav), `imb-maker` / `imb-maker-300` (imb_maker; $5k B 60 / $300 B 5 cap 25; Dublin since 2026-10-25), `imb-maker-live` (imb_maker live, scripts/imb_maker_live.py) (guard_maker bots `guard-mm-5m` / `guard-mm-15m` deleted from the server 2026-10-23) |
+| `bots` | id | bots/registry.py, control.py | strategy, mode (paper/live), config JSON, current `account` number, `archived` (time, else NULL: hidden from the Bots page and its totals, start refused, runner exits 0; column added to old DBs by `db.ADDED_COLUMNS`). Bots: `crouch-mm` (market_maker), `ml-copy` (ml_maker; `ml-join` (join_copy) deleted 2026-10-23), `crouch-v2` (crouch_v2), `fast-hold` / `fast-scalp` / `fast-value` and `fast-hold-v2` / `fast-scalp-v2` / `fast-value-v2` (fast_player), `late-fav` (late_fav), `imb-maker` / `imb-maker-300` (imb_maker; $5k B 60 / $300 B 5 cap 25; Dublin since 2026-10-25), `imb-maker-live` (imb_maker live, scripts/imb_maker_live.py; archived), `imb-maker-10` (imb_maker live, $10 measurement run, 2026-10-27), `stale-taker-1bps` / `stale-taker-2bps` (stale_taker, $1k paper, 10 sh; Dublin since 2026-10-26) (guard_maker bots `guard-mm-5m` / `guard-mm-15m` deleted from the server 2026-10-23) |
 | `bot_fills` | id; (bot_id, account, ts) | bot process | every (paper) fill incl. maker/taker, rebate, markout. Sells (fast_player scalp) have negative `shares` and `usd` (= net cash received) |
 | `bot_windows` | (bot_id, account, slug) | bot process | per-window settlement record (`data` JSON), upserted until official |
 | `bot_equity` | (bot_id, account, ts) | bot process | portfolio value every 30 s (PnL chart) |
@@ -237,7 +256,6 @@ WAL mode; every process/thread opens its own connection via `db.conn()`. Schema 
 | `data/recordings/recorder.log` | recorder output | |
 | `data/import/btc5m/` | the old logger PC's export (2026-10-19..22, 64 h): `INVENTORY.md` (read first), `raw_db/btc5m.db` (all feeds, its paper bots, windows), `bot_dbs/` (its live bots), `code/` (old project + analysis, `analysis/data/*.pkl` need pandas >= 3), `extracts/` | read-only input |
 | `data/import/btc5m/recordings_{home,dublin}/` | that data converted to the recorder format by scripts/import_btc5m.py | replay with `--dir` |
-| `data/recordings_server/` | copy of the Dublin server's recordings 10-24 00Z..10-26 05Z (scp) | replay with `--dir` (fast_allowance study) |
 
 ## 5b. Production server (Linux, AWS Dublin)
 Since 2026-10-22 the app also runs on an AWS EC2 server in Dublin (eu-west-1, Ubuntu 24.04, ~23 ms to

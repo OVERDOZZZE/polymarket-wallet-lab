@@ -325,7 +325,10 @@ class PaperBot:
         d = dataclasses.asdict(self.cfg)
         d.update({k: v for k, v in kw.items() if k in names})
         cfg = self.CONFIG(**d)
-        db.x("UPDATE bots SET config = ? WHERE id = ?", (db.dumps(cfg.to_dict()), self.bot_id))
+        # keep stored keys this (possibly older) code does not know: they belong to the next version
+        stored = db.loads((db.one("SELECT config FROM bots WHERE id = ?", (self.bot_id,)) or {}).get("config"), {})
+        extra = {k: v for k, v in stored.items() if k not in names}
+        db.x("UPDATE bots SET config = ? WHERE id = ?", (db.dumps({**extra, **cfg.to_dict()}), self.bot_id))
         self.cfg = cfg   # atomic swap; the engine reads self.cfg on every decision
 
     def reset(self, bankroll=None):

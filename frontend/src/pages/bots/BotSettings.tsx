@@ -30,8 +30,6 @@ const META: Record<string, Meta> = {
   maker_min_edge: { label: "Min model edge to rest a bid", help: "Bid only at prices at least this far below the pure model's fair value. Below −0.5 = off.", group: "Risk", step: 0.005 },
   taker_fair: { label: "Judge takes on", help: "blend (the quoting fair value) or model (the pure model).", group: "Simulation" },
   latency_ms: { label: "Simulated order latency (ms)", help: "Time for an order or cancel to reach the exchange. The Trade screen measures your real one.", group: "Simulation", step: 10 },
-  latency_samples: { label: "Measured FAK delays (ms)", help: "Real taker order round trips; each paper order draws one (+ the latency above), so paper misses about as often as live. Empty = off.", group: "Simulation" },
-  extra_pay: { label: "Price allowance", help: "Added to the order's limit (the highest price still keeping the min edge), so the order still fills when the ask moves up while it waits to match.", group: "Risk", step: 0.01 },
   min_requote_ms: { label: "Min requote gap (ms)", group: "Simulation", step: 5 },
   fee_rate: { label: "Fee rate", group: "Simulation", step: 0.01 },
   rebate_share: { label: "Rebate share of fee", help: "0.15 matches CrouchPredictions' actual payouts; the listed rate is 0.20.", group: "Simulation", step: 0.01 },

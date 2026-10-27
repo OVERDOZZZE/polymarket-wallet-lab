@@ -10,6 +10,7 @@ cases of docs/bots/bot_sim/BOT_SPEC.md. Offline: no network, no DB.
    switch, loss limit, end of quoting.
 """
 import asyncio
+import time
 import importlib.util
 import random
 import sys
@@ -228,6 +229,9 @@ class FakeGateway:
     def open_orders_in(self, condition_id):
         return list(self.open)
 
+    def _check_size(self, usd):
+        pass
+
     def post_limit_batch(self, orders, origin):
         out = []
         for _slug, side, _tok, px, _sz in orders:
@@ -413,10 +417,303 @@ def live():
     print(f"live layer: {'ok' if not any(f.startswith('live') for f in FAILS) else 'FAILED'}")
 
 
+class FakeFast:
+    """Answers like trading/fastorders.FastOrders: local ids f1, f2, ...; posts can be slow or rejected."""
+
+    def __init__(self):
+        self.pool, self.cpool = ThreadPoolExecutor(4), ThreadPoolExecutor(4)
+        self.n, self.posts, self.cancels, self.verified, self.delay = 0, [], [], True, 0.0
+        self.cancelled, self.transport = set(), 0       # transport: the next n posts lose their connection
+
+    def sign(self, token, price, size, post_only=True):
+        self.n += 1
+        return (token, price, size), f"f{self.n}", 0.5
+
+    def _post(self, signed, oid):
+        time.sleep(self.delay)
+        self.posts.append((oid, signed))
+        if self.transport:
+            self.transport -= 1
+            return {"ok": False, "order_id": oid, "local_id": oid, "error": "TransportError: Server disconnected",
+                    "code": "transport", "status": "rejected", "post_ms": 5.0}
+        if oid in self.cancelled:
+            return {"ok": False, "order_id": oid, "local_id": oid, "error": f"order {oid} is invalid. Already canceled.",
+                    "code": None, "status": "rejected", "post_ms": 20.0}
+        return {"ok": True, "order_id": oid, "local_id": oid, "error": None, "code": None, "status": "live",
+                "post_ms": 20.0}
+
+    def _cancel(self, ids):
+        self.cancels.append(list(ids))
+        self.cancelled |= set(ids)
+        return {"canceled": list(ids), "not_canceled": {}, "error": None, "ms": 20.0}
+
+
+def live_fast():
+    """The fast order path: one post per order, ids known at signing, cancels sent while posts are in flight."""
+    loop = asyncio.new_event_loop()
+    flush = lambda d=0.05: loop.run_until_complete(asyncio.sleep(d))
+    b, m = new_bot()
+    b.cfg = b.CONFIG.from_dict({**b.cfg.to_dict(), "B": 5.0, "inv_cap": 25.0})
+    b.gw, fo = FakeGateway(), FakeFast()
+    b.fo = fo
+    b._loop, b.live_on, b._lready = loop, True, True
+    t = (T0 + 100) * 1000.0
+    for k in range(30):
+        fut(b, t - 6000 + k * 200, 100000.0)
+    book(b, m, t - 5000, 0.48, 0.49, 300, 200)
+    live = lambda: [o for o in b.lorders.values() if o["status"] == "live"]
+    at(b, t)
+    b._requote(m, t, force=True)
+    flush()
+    check(len(fo.posts) == 26 and len(live()) == 26 and not b.gw.posts, f"fast: {len(fo.posts)} single posts, {len(live())} live")
+    check(all(o["oid"] == f"f{i + 1}" for i, o in enumerate(sorted(live(), key=lambda o: o["lid"]))), "fast: ids = local ids")
+    # slow posts: a guard pull while they are in flight cancels them at once, by id, before any ack
+    fo.delay = 0.3
+    book(b, m, t + 100, 0.50, 0.51, 300, 200)          # the market moves up: new levels are posted (slowly)
+    at(b, t + 100)
+    b._requote(m, t + 100, force=True)
+    flush(0.02)
+    sending = [o for o in b.lorders.values() if o["status"] == "sending"]
+    n_c = len(fo.cancels)
+    for k in range(3):                                 # Binance futures falls 0.6 bps: pull every Up bid
+        fut(b, t + 150 + k, 100000.0 - 6.0 * (k + 1))
+    at(b, t + 160)
+    b._requote(m, t + 160, force=True)
+    flush(0.02)
+    up_sending = [o for o in sending if o["side"] == "up"]
+    flush(0.6)
+    check(up_sending and len(fo.cancels) > n_c and all(o["csent"] is not None and o["csent"] < o["ack"] for o in up_sending),
+          f"fast: {len(up_sending)} Up orders in flight cancelled before their ack")
+    check(all(o["status"] == "done" for o in up_sending), "fast: cancelled in-flight orders end done")
+    check(b.lstat["cancelled_in_flight"] >= 1 or all(o["code"] != "rejected" for o in up_sending),
+          "fast: post that lost the race to its cancel counted as cancelled_in_flight")
+    check(all(len(c) == 1 for c in fo.cancels), "fast: one id per cancel request")
+    fo.verified = False                                # a wrong local id: the fast path switches itself off
+    b.fo._post = lambda signed, oid: {"ok": True, "order_id": "server-id", "local_id": oid, "error": None,
+                                      "code": None, "status": "live", "post_ms": 20.0}
+    fo.delay = 0.0
+    book(b, m, t + 3000, 0.46, 0.47, 300, 200)
+    at(b, t + 3000)
+    b._requote(m, t + 3000, force=True)
+    flush()
+    check(b.fo is None, "fast: off after an id mismatch")
+    loop.close()
+    print(f"fast path: {'ok' if not any(f.startswith('fast') for f in FAILS) else 'FAILED'}")
+
+
+def live_fixes():
+    """2026-10-27 fixes (imb-maker-10's first live window): re-priced orders are cancelled only once answered (no
+    cancel in flight for a requote: it made Polymarket hold the post's answer), urgent cancels still in flight; a post
+    lost in transit stays managed; a 'rejected' order the exchange has is taken back; the in-flight cap."""
+    loop = asyncio.new_event_loop()
+    flush = lambda d=0.05: loop.run_until_complete(asyncio.sleep(d))
+    b, m = new_bot()
+    b.cfg = b.CONFIG.from_dict({**b.cfg.to_dict(), "B": 5.0, "inv_cap": 25.0, "n_levels": 1})
+    b.gw, fo = FakeGateway(), FakeFast()
+    b.fo = fo
+    b._loop, b.live_on, b._lready = loop, True, True
+    t = (T0 + 100) * 1000.0
+    for k in range(30):
+        fut(b, t - 6000 + k * 200, 100000.0)
+    side_of = lambda side, st=("sending", "live", "cancelling"): [o for o in b.lorders.values()
+                                                                 if o["side"] == side and o["status"] in st]
+    # 1. a requote while the posts are in flight: nothing cancelled in flight, no second order on the side
+    fo.delay = 0.3
+    book(b, m, t, 0.48, 0.49, 300, 200)
+    b._requote(m, t, force=True)
+    flush(0.02)
+    first = {o["lid"]: o for o in b.lorders.values()}
+    check(len(first) == 2 and all(o["status"] == "sending" for o in first.values()), f"fix: {len(first)} first posts")
+    n_post, n_c = len(fo.posts), len(fo.cancels)
+    book(b, m, t + 20, 0.50, 0.51, 300, 200)           # the market moves while both posts are in flight
+    b._requote(m, t + 20, force=True)
+    flush(0.02)
+    check(len(fo.cancels) == n_c, f"fix: requote cancelled in flight ({len(fo.cancels) - n_c} cancels)")
+    check(all(o["want_cancel"] == "requote" for o in first.values()), "fix: in-flight orders not marked for a cancel")
+    check(len(b.lorders) == 2, f"fix: new orders placed while the old ones fly ({len(b.lorders)} orders)")
+    at(b, t + 400)
+    flush(0.5)                                          # answers come back: cancelled now, then the new prices posted
+    flush(0.5)
+    check(all(o["csent"] is not None and o["csent"] >= o["ack"] for o in first.values()),
+          "fix: re-priced orders not cancelled after their answer")
+    up = side_of("up", ("sending", "live"))
+    check(len(up) == 1 and up[0]["price"] == 0.50, f"fix: Up after the requote {[(o['price'], o['status']) for o in up]}")
+    # 2. flicker: moved and back before the answer: the order simply stays
+    book(b, m, t + 1000, 0.52, 0.53, 300, 200)
+    b._requote(m, t + 1000, force=True)
+    flush(0.02)
+    fly = [o for o in b.lorders.values() if o["status"] == "sending" and o["side"] == "up"]
+    book(b, m, t + 1010, 0.51, 0.52, 300, 200)
+    b._requote(m, t + 1010, force=True)
+    book(b, m, t + 1020, 0.52, 0.53, 300, 200)
+    b._requote(m, t + 1020, force=True)
+    n_c = len(fo.cancels)
+    at(b, t + 1400)
+    flush(0.5)
+    check(len(fly) == 1 and fly[0]["status"] == "live" and fly[0]["want_cancel"] is None and fly[0]["csent"] is None,
+          f"fix: flickered order {[(o['price'], o['status'], o['want_cancel']) for o in fly]}")
+    # 3. the guard: a deferred (requote) order is now cancelled in flight
+    book(b, m, t + 1500, 0.54, 0.55, 300, 200)
+    b._requote(m, t + 1500, force=True)
+    flush(0.02)
+    book(b, m, t + 1510, 0.53, 0.54, 300, 200)         # new Up post in flight gets a deferred requote cancel
+    b._requote(m, t + 1510, force=True)
+    fly = [o for o in b.lorders.values() if o["status"] == "sending" and o["side"] == "up"]
+    for k in range(3):                                  # Binance futures falls: pull every Up bid
+        fut(b, t + 1520 + k, 100000.0 - 6.0 * (k + 1))
+    flush(0.02)
+    check(fly and all(o["csent"] is not None and o["ack"] is None for o in fly),     # cancel sent, post not answered
+          f"fix: guard did not cancel a deferred order in flight {[(o['status'], o['csent'], o['ack']) for o in fly]}")
+    at(b, t + 3000)
+    flush(0.5)
+    for k in range(5):
+        fut(b, t + 3000 + k * 200, 100000.0)
+    fo.delay = 0.0
+    # 4. a post lost in transit: tracked as live / unconfirmed; dropped when the exchange does not have it
+    for o in list(b.lorders.values()):
+        if o["status"] in ("live", "sending", "cancelling"):
+            o["status"] = "done"
+    fo.transport = 1
+    book(b, m, t + 4000, 0.46, 0.47, 300, 200)
+    b._requote(m, t + 4000, force=True)
+    flush()
+    lost = [o for o in b.lorders.values() if o["code"] == "unconfirmed"]
+    check(len(lost) == 1 and lost[0]["status"] == "live" and b.lstat["post_unconfirmed"] == 1,
+          f"fix: lost post {[(o['status'], o['code']) for o in lost]}")
+    b.gw.open = []
+    at(b, t + 4400)
+    b._live_reconcile(m, t + 4400)
+    flush()
+    flush()
+    check(lost[0]["status"] == "done", f"fix: unconfirmed order the exchange lacks not dropped ({lost[0]['status']})")
+    check(len(side_of(lost[0]["side"], ("sending", "live"))) == 1, "fix: lost order not replaced")
+    # ... and cancelled by its id once it is unwanted (with the fake book, which lacks our orders, the side it hit may
+    # re-price at once: as soon as it counts as live its size is left out of the queue share)
+    fo.transport = 1
+    n_c = len(fo.cancels)
+    book(b, m, t + 5000, 0.44, 0.45, 300, 200)
+    b._requote(m, t + 5000, force=True)
+    flush()
+    book(b, m, t + 5100, 0.42, 0.43, 300, 200)
+    b._requote(m, t + 5100, force=True)
+    flush()
+    lost = [o for o in b.lorders.values() if o["code"] == "unconfirmed" and o["sent"] >= t + 5000]
+    check(len(lost) == 1 and any(lost[0]["oid"] in c for c in fo.cancels[n_c:]) and lost[0]["status"] == "done",
+          f"fix: unwanted unconfirmed order not cancelled {[(o['oid'], o['status'], o['csent']) for o in lost]}")
+    # 5. an order we marked rejected that the exchange has open: managed again, its fill counted
+    o = side_of("down", ("live",))[0]
+    o["status"], o["code"] = "rejected", "exception"
+    b.gw.open = [{"id": o["oid"], "asset_id": "D", "side": "BUY", "price": str(o["price"]),
+                  "original_size": str(o["size"]), "size_matched": "2"}]
+    dn0 = b.live.get(m.slug, {}).get("down_sh", 0.0)
+    at(b, t + 5200)
+    b._live_reconcile(m, t + 5200)
+    flush()
+    flush()
+    check(o["status"] in ("live", "cancelling", "done") and b.lstat["readopted"] == 1
+          and abs(b.live[m.slug]["down_sh"] - dn0 - 2) < 1e-9, f"fix: rejected-but-open order {o['status']} {b.lstat['readopted']}")
+    b.gw.open = []
+    # 6. in-flight cap: one post awaiting its answer at a time
+    for x in list(b.lorders.values()):
+        x["status"] = "done"
+    b.cfg = b.CONFIG.from_dict({**b.cfg.to_dict(), "live_max_inflight": 1})
+    fo.delay = 0.3
+    book(b, m, t + 6000, 0.40, 0.41, 300, 200)
+    b._requote(m, t + 6000, force=True)
+    flush(0.02)
+    check(sum(1 for x in b.lorders.values() if x["status"] == "sending") == 1, "fix: in-flight cap not applied")
+    flush(0.7)
+    loop.close()
+    print(f"live fixes: {'ok' if not any(f.startswith('fix') for f in FAILS) else 'FAILED'}")
+
+
+def spend_and_stall():
+    """spend_cap_hard (lighter side until flat or flipped, then nothing) and live_stall_ms (no new posts while the
+    market's feed is silent or a post waits that long; cancels still go)."""
+    b, m = new_bot()
+    b.cfg = b.CONFIG.from_dict({**b.cfg.to_dict(), "spend_cap_usd": 6.0})
+    st = {}
+    check(b._spend_allow(st, 5.0, 5.0) == (True, True), "spend: below the cap both sides")
+    check(b._spend_allow(st, 7.0, 5.0) == (False, True) and b._spend_allow(st, 9.0, -1.0) == (True, False),
+          "spend: plain rule = lighter side, also after a flip")
+    b.cfg = b.CONFIG.from_dict({**b.cfg.to_dict(), "spend_cap_hard": True})
+    st = {}
+    seq = [b._spend_allow(st, c, n) for c, n in ((7.0, 5.0), (7.0, 5.0), (9.5, 0.0), (9.5, 0.0), (12.0, -5.0))]
+    check(seq == [(False, True), (False, True), (False, False), (False, False), (False, False)],
+          f"spend: hard cap long Up -> Down only -> flat -> nothing {seq}")
+    st = {}
+    seq = [b._spend_allow(st, c, n) for c, n in ((7.0, -5.0), (9.9, 1.0), (9.9, -4.0))]
+    check(seq == [(True, False), (False, False), (False, False)], f"spend: hard cap flip ends it {seq}")
+    check(b._spend_allow({}, 7.0, 0.0) == (False, False), "spend: hard cap reached flat: nothing")
+    st = {}                                              # 03:40 live window: a partial fill left 0.008 sh of dust
+    seq = [b._spend_allow(st, c, n) for c, n in ((8.85, -5.0076), (11.4, -0.0076))]
+    check(seq == [(True, False), (False, False)], f"spend: hard cap under a share apart is flat {seq}")
+    # stall gate on the live layer
+    loop = asyncio.new_event_loop()
+    flush = lambda d=0.05: loop.run_until_complete(asyncio.sleep(d))
+    b, m = new_bot()
+    b.cfg = b.CONFIG.from_dict({**b.cfg.to_dict(), "B": 5.0, "inv_cap": 25.0, "n_levels": 1, "live_stall_ms": 300.0})
+    b.gw, fo = FakeGateway(), FakeFast()
+    b.fo = fo
+    b._loop, b.live_on, b._lready = loop, True, True
+    t = (T0 + 100) * 1000.0
+    for k in range(30):
+        fut(b, t - 6000 + k * 200, 100000.0)
+    book(b, m, t, 0.48, 0.49, 300, 200)
+    b._requote(m, t, force=True)
+    flush()
+    check(len(fo.posts) == 2, f"stall: normal quoting {len(fo.posts)} posts")
+    n_p, n_c = len(fo.posts), len(fo.cancels)
+    m.books["up"]["bids"][0.50] = 50.0                   # the book changed, but its feed has been silent 0.5 s
+    m.books["down"]["bids"].pop(0.51, None)
+    m.books["down"]["bids"][0.49] = 50.0
+    at(b, t + 500)
+    b._requote(m, t + 500, force=True)
+    flush()
+    check(len(fo.posts) == n_p and len(fo.cancels) > n_c and b.lstat["stalls"] == 1,
+          f"stall: silent feed: posts {len(fo.posts) - n_p}, cancels {len(fo.cancels) - n_c}, stalls {b.lstat['stalls']}")
+    book(b, m, t + 600, 0.50, 0.51, 300, 200)           # the feed is back
+    flush()
+    check(len(fo.posts) > n_p, "stall: no posts after the feed came back")
+    fo.delay = 0.5                                       # a post that waits > 300 ms also counts as a stall
+    n_p = len(fo.posts)
+    book(b, m, t + 700, 0.52, 0.53, 300, 200)
+    flush(0.02)
+    sent0 = sum(1 for x in b.lorders.values() if x["status"] == "sending")
+    at(b, t + 1100)
+    book(b, m, t + 1100, 0.54, 0.55, 300, 200)
+    flush(0.02)
+    sent1 = sum(1 for x in b.lorders.values() if x["status"] == "sending")
+    check(sent0 >= 1 and sent1 == sent0, f"stall: placed behind a post waiting 400 ms ({sent0} -> {sent1} in flight)")
+    flush(0.6)
+    loop.close()
+    print(f"spend cap / stall: {'ok' if not any(f.startswith(('spend', 'stall')) for f in FAILS) else 'FAILED'}")
+
+
+def exposure():
+    """exposure_cap: a side's resting size + net toward it stays within inv_cap, levels from the top."""
+    from backend.bots.strategies.imb_maker import ImbMakerConfig, ladders
+    c = ImbMakerConfig(B=5.0, inv_cap=25.0, exposure_cap=True)
+    w = ladders(c, 480, 490, 2, 2, 0.0)
+    up = sorted((px for s, px in w if s == 1), reverse=True)
+    dn = sorted(px for s, px in w if s == -1)
+    check(sum(w[(1, p)] for p in up) <= 25 and up[0] == 460 and up == [460 - 10 * k for k in range(len(up))],
+          f"exposure: Up ladder {up} from the top, {sum(w[(1, p)] for p in up)} sh <= 25")
+    check(sum(w[(-1, p)] for p in dn) <= 25 and dn[0] == 510, f"exposure: Down ladder {dn}")
+    w = ladders(c, 480, 490, 2, 2, 18.0)               # long 18 Up: room 7 on Up, 43 on Down
+    check(sum(sz for (s, _), sz in w.items() if s == 1) <= 7 and sum(sz for (s, _), sz in w.items() if s == -1) <= 43,
+          "exposure: room shrinks with net")
+    print(f"exposure cap: {'ok' if not any(f.startswith('exposure') for f in FAILS) else 'FAILED'}")
+
+
 def main():
     fuzz(load_reference())
     cases()
     live()
+    live_fast()
+    live_fixes()
+    spend_and_stall()
+    exposure()
     if FAILS:
         sys.exit(f"{len(FAILS)} check(s) failed")
     print("all checks passed")

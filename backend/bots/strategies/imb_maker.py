@@ -29,6 +29,8 @@ time (guard_maker), settlement and persistence. Where this module replaces the i
     not a quiet market) or has not started, nothing is quoted, because the unguarded ladder is the losing version
     of this strategy.
   * rebate_share = 0.20: the spec's section 6 found 0.2 x fee rate x p(1-p) exact (the engine default is 0.15).
+  * spend_cap_hard: past spend_cap_usd the lighter side is bid only until the window is flat (or flips) once, then
+    neither side: the plain rule let imb-maker-10 alternate Up / Down to $16 against a $6 cap (2026-10-27).
   * spend_cap_usd (0 = off): once a window's fills cost this much only its lighter side is bid, until flat (spec
     phase 2: ~$100; stopping both sides left windows one-sided in the first live run).
 Inherited settings this strategy ignores: levels, sizes, base_edge, level_step, model_weight, lead_weight, join_only,
@@ -51,6 +53,17 @@ matched to our order ids, so another bot on the same wallet never mixes in. Safe
     failed cancel request is retried after 0.2 s. Polymarket's per-signer limits (standard tier: 40 orders/s,
     burst 60; 80 cancels/s, burst 120; a batch costs one token per order) leave room: this sends ~10 of each a
     second while quoting, in batches of at most 15.
+  * Polymarket holds a post's response 0.6-9 s when our cancel of it arrives before that response (open BTC 5m
+    windows; proven 2026-10-27 with scripts/delay_probe.py and a packet capture; imb-maker-10's first live window:
+    129 of 179 posts cancelled in flight, mostly 3-50 ms after sending, because the top price flickered). So with
+    live_requote_wait_ack a re-priced order is cancelled once its post is answered (if its price is wanted again by
+    then it simply stays), and its side places nothing new until then; urgent cancels still go in flight.
+    live_max_inflight caps the posts awaiting an answer. Fast path: cancels on their own connection (FastOrders
+    cancel_gw), resent at once when it drops.
+  * a post that fails in transit (connection dropped: it was sent and may rest on the book) stays tracked as live
+    ('unconfirmed'): cancelled by its id when unwanted, checked against the exchange 0.3 s later. A reconcile also
+    takes back any order we marked rejected that the exchange has open. (First live run: 3 of 4 fills came from
+    such orders, resting unmanaged.)
 With live_merge, each window's balanced Up + Down pairs are merged back into USDC 5 s after it closes (winners are
 redeemed by Polymarket). live_dry_run (paper mode only) runs the whole live order flow with simulated 30 ms acks
 and sends nothing, to check it on real books. The live ledger is rebuilt from live_orders (origin = bot id) on a
@@ -118,6 +131,9 @@ class ImbMakerConfig(GuardMakerConfig):
     maker_min_edge: float = -1.0         # no model filter
     jump_bps: float = 1e9                # no Coinbase jump pull
     spend_cap_usd: float = 0.0           # a window whose fills cost this much is not quoted any more (0 = off)
+    spend_cap_hard: bool = False         # past the cap the lighter side only until flat (or flipped), then nothing
+    exposure_cap: bool = False           # resting size of a side + net toward it never above inv_cap (levels from the
+                                         # top; one sweep cannot push inventory far past the cap)
     # guard: Binance USD-M futures last trade
     sources: tuple = ("binance_fut",)
     spike_bps: float = 0.5
@@ -134,6 +150,12 @@ class ImbMakerConfig(GuardMakerConfig):
     live_loss_limit_usd: float = 60.0    # no quoting once settled live PnL + worst case of open windows <= -this
     live_merge: bool = True              # merge each window's Up + Down pairs into USDC after it closes
     live_dry_run: bool = False           # paper mode: run the live order flow with simulated acks, send nothing
+    live_fast: bool = True               # fast order path (trading/fastorders.py): one order per request, the order id
+                                         # computed when signing, cancels sent at once (even while the post is in flight)
+    live_requote_wait_ack: bool = True   # a re-priced order is cancelled only once its post is answered (guard, cap,
+                                         # clock, stop cancels still go at once); its side places nothing new meanwhile
+    live_max_inflight: int = 0           # posts awaiting their answer, at most (0 = no limit); cancels never wait
+    live_stall_ms: float = 0.0           # no new posts while the market's feed is silent / a post waits this long (0 = off)
 
 
 # ---------------------------------------------------------------- decision code (port of strategy.py)
@@ -207,6 +229,15 @@ def ladders(c, bb, ba, d_up, d_dn, net, allow=(True, True)):
             if 1000 - px > cap_px:
                 continue
             want[(-1, px)] = rule_size(c.B, px)
+    if getattr(c, "exposure_cap", False):
+        out = {}
+        for s, room in ((1, c.inv_cap - net), (-1, c.inv_cap + net)):
+            for k in sorted((k for k in want if k[0] == s), key=lambda k: -k[1] * s):
+                if want[k] > room + 1e-9:
+                    break
+                out[k] = want[k]
+                room -= want[k]
+        want = out
     return want
 
 
@@ -264,6 +295,7 @@ class ImbMakerBot(GuardMakerBot):
         self._otok, self._otok_ms = float(OTOK_BURST), 0.0    # our own order-placement token bucket
         self.lstat = collections.Counter()
         self.lpost_ms, self.lcancel_ms = deque(maxlen=2000), deque(maxlen=2000)
+        self.fo = None                                # FastOrders (live + live_fast)
         if self.mode == "live":
             self._load_live_maker()
 
@@ -416,16 +448,31 @@ class ImbMakerBot(GuardMakerBot):
         g_up, g_dn, stale = self._guard_allow(now)
         d_up, d_dn = top_depths(cfg, size_bb, size_ba, (now - st["bb"][1]) / 1000.0, (now - st["ba"][1]) / 1000.0)
         st["inp"] = (bb, ba, d_up, d_dn, g_up, g_dn, stale)
-        spent = cfg.spend_cap_usd > 0 and m.total_cost() >= cfg.spend_cap_usd   # then only the lighter side
-        want = ladders(cfg, bb, ba, d_up, d_dn, net, (g_up and (not spent or net < 0), g_dn and (not spent or net > 0)))
+        c_up, c_dn = self._spend_allow(st, m.total_cost(), net)
+        want = ladders(cfg, bb, ba, d_up, d_dn, net, (g_up and c_up, g_dn and c_dn))
         out = {k: list(v.items()) for k, v in _by_token(want).items()}
-        why = {s: self._why(stale, g, spent and heavy, capped) for s, g, capped, heavy in
-               (("up", g_up, net > cfg.inv_cap, net >= 0), ("down", g_dn, net < -cfg.inv_cap, net <= 0))}
+        why = {s: self._why(stale, g, not c, capped) for s, g, capped, c in
+               (("up", g_up, net > cfg.inv_cap, c_up), ("down", g_dn, net < -cfg.inv_cap, c_dn))}
         tot = size_bb + size_ba
         code = {"requote": "q", "guard": "g", "cap": "c", "stale": "s", "spend_cap": "x"}
         self._log_decision(st, (round(now, 1), bb, ba, size_bb, size_ba, round(size_bb / tot if tot > 0 else 0.5, 4),
                                 d_up, d_dn, round(net, 2), code[why["up"]], code[why["down"]]))
         return out, why
+
+    def _spend_allow(self, store, cost, net):
+        """(Up allowed, Down allowed) by spend_cap_usd. Reached: only the lighter side. spend_cap_hard: only until the
+        window is flat or flips once (the side that was heavier when the cap was reached is never bid again), then no
+        side for the rest of the window; `store` (per window, paper or live) remembers that side."""
+        cfg = self.cfg
+        if cfg.spend_cap_usd <= 0 or cost < cfg.spend_cap_usd:
+            return True, True
+        if not cfg.spend_cap_hard:
+            return net < 0, net > 0
+        sign = (net >= 1.0) - (net <= -1.0)   # under a share apart (a partial fill's dust) counts as flat
+        s0 = store.setdefault("cap_s0", sign)
+        if sign != s0:
+            s0 = store["cap_s0"] = 0
+        return s0 < 0, s0 > 0
 
     @staticmethod
     def _why(stale, allowed, spent, capped):
@@ -509,40 +556,67 @@ class ImbMakerBot(GuardMakerBot):
         reason = off or self._live_block(w) or (None if inp else "no_book")
         if reason is None:
             bb, ba, d_up, d_dn, g_up, g_dn, stale = inp
-            spent = w is not None and cfg.spend_cap_usd > 0 and w["up_cost"] + w["down_cost"] >= cfg.spend_cap_usd
-            want = _by_token(ladders(cfg, bb, ba, d_up, d_dn, net,       # spend cap reached: only the lighter side
-                                     (g_up and (not spent or net < 0), g_dn and (not spent or net > 0))))
-            why = {s: self._why(stale, g, spent and heavy, capped) for s, g, capped, heavy in
-                   (("up", g_up, net > cfg.inv_cap, net >= 0), ("down", g_dn, net < -cfg.inv_cap, net <= 0))}
+            c_up, c_dn = self._spend_allow(w, w["up_cost"] + w["down_cost"], net) if w is not None else (True, True)
+            want = _by_token(ladders(cfg, bb, ba, d_up, d_dn, net, (g_up and c_up, g_dn and c_dn)))
+            why = {s: self._why(stale, g, not c, capped) for s, g, capped, c in
+                   (("up", g_up, net > cfg.inv_cap, c_up), ("down", g_dn, net < -cfg.inv_cap, c_dn))}
         else:
             want, why = {"up": {}, "down": {}}, {"up": reason, "down": reason}
-        cancels, by_side = [], {"up": [], "down": []}
+        cancels, keep = [], {"up": set(), "down": set()}
         for side in ("up", "down"):
-            keep = set()
             for lid in lv["act"]:
                 o = self.lorders.get(lid)
                 if o is None or o["side"] != side or o["status"] not in ("sending", "live"):
                     continue
+                k = round(o["price"], 4)
                 if o["want_cancel"]:                  # unwanted while in flight: cancel once acked
                     if o["status"] == "live":
                         cancels.append((o, o["want_cancel"]))
+                    elif o["want_cancel"] == "requote" and k in want[side] and k not in keep[side]:
+                        o["want_cancel"] = None       # wanted again before its answer came: it stays
+                        keep[side].add(k)
+                    elif why[side] != "requote":
+                        cancels.append((o, why[side]))    # now urgent (guard, cap, clock...): cancel it in flight
                     continue
-                k = round(o["price"], 4)
-                if k in want[side] and k not in keep:
-                    keep.add(k)
+                if k in want[side] and k not in keep[side]:
+                    keep[side].add(k)
                 else:
                     cancels.append((o, why[side]))
-            if now >= self._lblock:
-                for px, sz in want[side].items():
-                    if px not in keep and now >= lv["backoff"].get((side, px), 0.0):
-                        by_side[side].append((side, px, sz))
         if cancels:
             self._live_cancel(cancels, now)
+        by_side, sending, oldest = {"up": [], "down": []}, 0, now
+        busy = set()                                  # a side with a re-priced order still in flight places nothing
+        for lid in lv["act"]:
+            o = self.lorders.get(lid)
+            if o is not None and o["status"] == "sending":
+                sending += 1
+                oldest = min(oldest, o["sent"])
+                if o["want_cancel"]:
+                    busy.add(o["side"])
+        # Polymarket stalls (every market's feed stops at once, up to ~2 s): place nothing new while this market's feed
+        # is silent or a post of ours waits that long; cancels still go
+        stalled = cfg.live_stall_ms > 0 and m.last_book_ms > 0 and (now - m.last_book_ms > cfg.live_stall_ms
+                                                                       or now - oldest > cfg.live_stall_ms)
+        if stalled and any(want[s] for s in want):
+            if not lv.get("stalled"):
+                self.lstat["stalls"] += 1
+            self.lstat["stall_skips"] += 1
+        lv["stalled"] = stalled
+        if now >= self._lblock and not stalled:
+            for side in ("up", "down"):
+                if side in busy:
+                    continue
+                for px, sz in want[side].items():
+                    if px not in keep[side] and now >= lv["backoff"].get((side, px), 0.0):
+                        by_side[side].append((side, px, sz))
         # ladder tops first, Up and Down alternating; within our own order budget (Polymarket: 40/s, burst 60)
         places = [x for pair in zip(by_side["up"] + [None] * 13, by_side["down"] + [None] * 13) for x in pair if x]
         self._otok = min(OTOK_BURST, self._otok + (now - self._otok_ms) / 1000.0 * OTOK_RATE)
         self._otok_ms = now
-        places = places[:int(self._otok)]
+        room = int(self._otok)
+        if cfg.live_max_inflight > 0:
+            room = min(room, cfg.live_max_inflight - sending)
+        places = places[:max(room, 0)]
         if places:
             self._otok -= len(places)
             self._live_place(m, lv, places, now)
@@ -570,6 +644,8 @@ class ImbMakerBot(GuardMakerBot):
         return fut
 
     def _live_place(self, m, lv, places, now):
+        if self.fo is not None:
+            return self._fast_place(m, lv, places, now)
         for i in range(0, len(places), BATCH):
             items, req = [], []
             for side, px, sz in places[i:i + BATCH]:
@@ -628,8 +704,13 @@ class ImbMakerBot(GuardMakerBot):
     def _live_cancel(self, pairs, now):
         ids = []
         for o, why in pairs:
-            if o["status"] == "sending":
-                o["want_cancel"] = o["want_cancel"] or why     # cancelled once its id is back
+            fast = o.get("fast") and o["oid"] and self.fo is not None
+            if o["status"] == "sending" and (not fast or (why == "requote" and self.cfg.live_requote_wait_ack)):
+                o["want_cancel"] = o["want_cancel"] or why     # cancelled once its id / answer is back
+                continue
+            if o["status"] == "sending" and now >= self._lcretry:  # fast path: the id is known, cancel it in flight
+                o["status"], o["csent"], o["why"] = "cancelling", now, o["why"] or why
+                ids.append(o["oid"])
                 continue
             if o["status"] != "live" or now < self._lcretry:   # last cancel request failed (e.g. 429): retry soon
                 continue
@@ -638,6 +719,11 @@ class ImbMakerBot(GuardMakerBot):
         if not ids:
             return
         self.lstat["cancels"] += len(ids)
+        if self.fo is not None:                        # one id per request, all at once
+            for oid in ids:
+                fut = self._loop.run_in_executor(self.fo.cpool, self._fast_cancel_call, self.fo, [oid])
+                fut.add_done_callback(lambda f, ids=[oid]: self._live_cancelled(f, ids))
+            return
         fn = self.gw.cancel_batch if self.gw is not None else self._dry_cancel
         fut = self._live_call(fn, ids, pool=self.gw.cpool if self.gw is not None else None)
         fut.add_done_callback(lambda f, ids=ids: self._live_cancelled(f, ids))
@@ -661,12 +747,129 @@ class ImbMakerBot(GuardMakerBot):
             o = self.loid.get(oid)
             if o is None:
                 continue
-            if o["status"] == "cancelling":
+            if o["status"] in ("cancelling", "sending"):
                 o["status"] = "done"
             o["cack"] = o["cack"] or now
             if oid in r["not_canceled"]:
                 o["code"] = o["code"] or "not_canceled"
                 o["err"] = str(r["not_canceled"][oid])[:120]
+
+    # ------------------------------------------------------------------ live: fast order path
+    def _fast_place(self, m, lv, places, now):
+        """Sign each order here (~1 ms; its id is known from now on, so it can be cancelled while in flight) and post
+        it on its own request; the live_orders rows are written off the order path."""
+        rows = []
+        for side, px, sz in places:
+            self._lid += 1
+            o = {"lid": self._lid, "slug": m.slug, "win": m.minutes, "start": m.start, "end": m.end, "side": side,
+                 "price": px, "size": sz, "matched": 0.0, "tsum": 0.0, "sent": now, "ack": None, "post_ms": None,
+                 "oid": None, "status": "sending", "csent": None, "cack": None, "why": None, "code": None,
+                 "err": None, "want_cancel": None, "fast": True}
+            try:
+                self.gw._check_size(sz * px)
+                signed, oid, sign_ms = self.fo.sign(m.tokens[side], px, sz)
+            except Exception as e:
+                o["status"], o["err"], o["code"] = "rejected", f"{type(e).__name__}: {e}"[:200], "sign_error"
+                self.lstat["rej_sign_error"] += 1
+                self._err(f"live sign: {o['err']}")
+                continue
+            o["oid"] = oid
+            self.lorders[o["lid"]] = o
+            self.loid[oid] = o
+            lv["lids"].append(o["lid"])
+            lv["act"].append(o["lid"])
+            self.lstat["sent"] += 1
+            fut = self._loop.run_in_executor(self.fo.pool, self.fo._post, signed, oid)
+            fut.add_done_callback(lambda f, o=o, m=m: self._fast_placed(f, o, m))
+            rows.append((oid, time.time(), self.bot_id, m.slug, m.tokens[side], side, "BUY", "limit", px, sz, None,
+                         "sending", None, None, orjson.dumps({"post_only": True, "fast": True,
+                                                              "sign_ms": round(sign_ms, 2)}).decode()))
+        if rows:
+            self.lstat["post_batches"] += 1
+            self.gw.bg.submit(self._fast_record, rows)
+
+    @staticmethod
+    def _fast_record(rows):
+        db.many("INSERT OR REPLACE INTO live_orders (order_id, ts, origin, slug, token_id, outcome, side, order_type, "
+                "price, size, amount, status, latency_ms, error, data) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+
+    @staticmethod
+    def _fast_update(oid, status, ms, err):
+        db.x("UPDATE live_orders SET status = ?, latency_ms = ?, error = ?, "
+             "data = json_set(COALESCE(data, '{}'), '$.post_ms', ?) WHERE order_id = ?", (status, ms, err, ms, oid))
+
+    @staticmethod
+    def _fast_cancel_call(fo, ids):
+        r = fo._cancel(ids)
+        if r["error"]:
+            raise RuntimeError(r["error"])
+        return r
+
+    def _fast_placed(self, f, o, m):
+        now = self.clock() * 1000.0
+        try:
+            r = f.result()
+        except Exception as e:
+            r = {"ok": False, "error": f"{type(e).__name__}: {e}"[:200], "code": "exception", "post_ms": None}
+        o["ack"], o["post_ms"] = now, r.get("post_ms")
+        if r.get("post_ms") is not None:
+            self.lpost_ms.append(r["post_ms"])
+        self.gw.bg.submit(self._fast_update, o["oid"], "live" if r["ok"] else "unconfirmed" if r.get("code") == "transport"
+                          else "rejected", r.get("post_ms"), r.get("error"))
+        if self.fo is not None and self.fo.verified is False:      # local ids are wrong: stop using them
+            self.fo = None
+            self._err("live: local order ids do not match the exchange's; fast path off")
+        if r["ok"]:
+            self.lstat["live"] += 1
+            sid = str(r.get("order_id") or o["oid"])
+            if sid != o["oid"]:                        # the exchange's id wins (the fast path is off by now)
+                self.loid.pop(o["oid"], None)
+                o["oid"] = sid
+                self.loid[sid] = o
+            if o["status"] == "sending":
+                o["status"] = "live"
+                if o["want_cancel"]:
+                    self._live_cancel([(o, o["want_cancel"])], now)
+                    self._requote(m, now, force=True)          # its side may place again
+            return
+        err = str(r.get("error") or "")
+        if r.get("code") == "transport" and o["status"] in ("sending", "cancelling"):
+            # sent, but the connection died before the answer: it may rest on the book. Keep it as live (cancelled by
+            # id when unwanted) and ask the exchange what it really has in 0.3 s.
+            if o["status"] == "sending":
+                o["status"] = "live"
+            o["code"], o["err"] = "unconfirmed", err[:200]
+            self.lstat["post_unconfirmed"] += 1
+            self._lrec[m.slug] = min(self._lrec.get(m.slug, now + 300), now + 300)
+            self._live_log("unconfirmed", o, info=err[:200])
+            if o["status"] == "live" and o["want_cancel"]:
+                self._live_cancel([(o, o["want_cancel"])], now)
+            self._requote(m, now, force=True)
+            return
+        low = err.lower()
+        if "already canceled" in low:                  # our cancel reached the exchange first: it never rested
+            o["status"], o["code"] = "done", "cancelled_in_flight"
+            self.lstat["cancelled_in_flight"] += 1
+            return
+        code = r.get("code") or "error"
+        if "post-only" in low or "post only" in low or "cross" in low:
+            code = "post_only_would_cross"
+        elif "balance" in low:
+            code = "not_enough_balance"
+        elif "marketable" in low:
+            code = "post_only_would_cross"
+        o["status"], o["err"], o["code"] = "rejected", err[:200], code
+        self.lstat["rej_" + str(code)] += 1
+        lv = _lv(m)
+        if code == "post_only_would_cross":
+            lv["backoff"][(o["side"], o["price"])] = now + 300
+            return
+        lv["backoff"][(o["side"], o["price"])] = now + 1000
+        if code in ("not_enough_balance", "exception", "error"):
+            self._lblock = now + (2000 if code == "not_enough_balance" else 500)
+        if code in ("exception", "error"):             # it may have landed: look in 1 s
+            self._lrec[m.slug] = min(self._lrec.get(m.slug, now + 1000), now + 1000)
+        self._live_log("rejected", o, info=err[:200])
 
     def _dry_post(self, orders, _origin):
         return {"orders": [{"ok": True, "order_id": f"dry-{time.time_ns()}-{i}", "error": None, "code": None,
@@ -786,7 +989,21 @@ class ImbMakerBot(GuardMakerBot):
             oid = str(r.get("id"))
             seen.add(oid)
             side = m.side_of.get(str(r.get("asset_id")))
-            if oid in self.loid or side is None or str(r.get("side")).upper() != "BUY":
+            known = self.loid.get(oid)
+            if known is not None and known["status"] == "rejected":  # we took it for failed, but it rests: manage it
+                known["status"], known["code"], known["ack"] = "live", "adopted", known["ack"] or now
+                if known["lid"] not in lv["act"]:
+                    lv["act"].append(known["lid"])
+                self.lstat["readopted"] += 1
+                self._live_log("adopted", known, info="marked rejected, but open on the exchange")
+                try:
+                    sm = float(r.get("size_matched") or 0)
+                except (TypeError, ValueError):
+                    sm = 0.0
+                if sm > known["matched"] + 1e-9:
+                    self._live_matched(known, sm, now, None)
+                continue
+            if known is not None or side is None or str(r.get("side")).upper() != "BUY":
                 continue
             try:
                 px, size, sm = round(float(r["price"]), 4), float(r["original_size"]), float(r.get("size_matched") or 0)
@@ -807,8 +1024,8 @@ class ImbMakerBot(GuardMakerBot):
                 self._live_matched(o, sm, now, None)
         for lid in list(lv["act"]):
             o = self.lorders.get(lid)
-            if (o is not None and o["status"] in ("live", "cancelling") and o["oid"] not in seen
-                    and o["ack"] is not None and o["ack"] < t_req - 1000):
+            if (o is not None and o["status"] in ("live", "cancelling") and o["oid"] not in seen and o["ack"] is not None
+                    and (o["ack"] < t_req - 1000 or (o["code"] == "unconfirmed" and o["ack"] < t_req))):
                 o["status"], o["code"] = "done", o["code"] or "gone"
                 self.lstat["vanished"] += 1
         self._requote(m, now, force=True)
@@ -876,6 +1093,12 @@ class ImbMakerBot(GuardMakerBot):
             self.gw.light = True
             self.gw.on_event = self._on_live_event
             self.gw.start(self._loop)
+            if self.cfg.live_fast:
+                from ...trading.fastorders import FastOrders
+                cg = Gateway()                                  # cancels: own client and connection
+                cg.light = True
+                threading.Thread(target=cg._init, daemon=True, name="cancel-gw").start()
+                self.fo = FastOrders(self.gw, cancel_gw=cg)
             feeds += [self._live_resolver(), self._live_boot()]
         elif self.dry:
             self._lready = True
@@ -1041,5 +1264,6 @@ class ImbMakerBot(GuardMakerBot):
                 "orders": [{"slug": o["slug"], "win": o["win"], "side": o["side"], "price": o["price"], "size": o["size"],
                             "matched": o["matched"], "status": o["status"], "age": now - o["sent"] / 1000.0}
                            for o in sorted(resting, key=lambda o: (o["slug"], o["side"], -o["price"]))][:60],
-                "log": list(self.live_log)[-100:],
+                "log": list(self.live_log)[-100:], "rate_limit": dict(self.fo.rl) if self.fo is not None else None,
+                "inflight": sum(1 for o in resting if o["status"] == "sending"),
                 "gw_errors": list(gw.errors)[-5:] if gw else [], "gw_reconnects": gw.reconnects if gw else 0}

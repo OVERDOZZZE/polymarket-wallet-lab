@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { Card, Seg } from "../../components/ui";
 import { FEEDS, FeedId, TWAP_S, bookLat, clLastSec, feeds, projectedTwap, twapAt } from "../../lib/feeds";
 import { clock, hm, money, num } from "../../lib/format";
-import { useNow, usePref } from "../../lib/hooks";
+import { useMedia, useNow, usePref } from "../../lib/hooks";
 import { tradeSocket } from "../../lib/tradeSocket";
 import { AccountPanel } from "./AccountPanel";
 import { OrderBook } from "./OrderBook";
@@ -29,6 +29,7 @@ export default function TradePage() {
   const [outcome, setOutcome] = useState<"up" | "down">("up");
   const [limitPx, setLimitPx] = useState<number | null>(null);
   const [sellReq, setSellReq] = useState<SellRequest | null>(null);
+  const phone = useMedia("(max-width: 640px)");
 
   const { current, next } = pickWindows(markets, minutes, now);
   const m = which === "next" ? next : current;
@@ -62,7 +63,7 @@ export default function TradePage() {
       </div>
 
       <div className="trade-grid">
-        <div className="col" style={{ gap: 16 }}>
+        <div className="col trade-main" style={{ gap: 16 }}>
           <Card>
             <div className="ptb" style={{ marginBottom: 12 }}>
               <div><div className="l">Price to beat</div><div className="v num">{strike.value !== null ? money(strike.value, 2) : "–"}</div><div className="muted small">{strike.src}</div></div>
@@ -93,7 +94,7 @@ export default function TradePage() {
               <label className="check small" title="Shift Coinbase/Kraken/Binance by their median gap to Chainlink so the lines overlay (shows who leads)."><input type="checkbox" checked={align} onChange={(e) => setAlign(e.target.checked)} />Align to Chainlink</label>
               <Seg value={span} options={SPAN_OPTIONS} onChange={setSpan} />
             </div>
-            <PriceChart span={span} visible={visible} align={align} strike={strike.value} windowStart={m?.start} windowEnd={m?.end_ts} />
+            <PriceChart span={span} visible={visible} align={align} strike={strike.value} windowStart={m?.start} windowEnd={m?.end_ts} height={phone ? 230 : 360} />
           </Card>
 
           <WindowPositions m={m} acct={acct} onSell={(o, sh) => setSellReq({ outcome: o, shares: sh, n: Date.now() })}
@@ -123,7 +124,7 @@ export default function TradePage() {
           </div>
           <div id="account"><AccountPanel acct={acct} markets={markets} now={now} /></div>
         </div>
-        <div style={{ position: "sticky", top: 76 }}>
+        <div className="trade-ticket">
           <OrderTicket m={m} acct={acct} now={now} outcome={outcome} setOutcome={setOutcome} limitPx={limitPx} setLimitPx={setLimitPx} sellReq={sellReq} />
         </div>
       </div>

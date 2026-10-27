@@ -40,6 +40,19 @@ export function useNow(ms = 1000) {
   return now;
 }
 
+/** True while the viewport matches `query` (e.g. "(max-width: 640px)" for phones). */
+export function useMedia(query: string) {
+  const [on, setOn] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const f = () => setOn(mq.matches);
+    f();
+    mq.addEventListener("change", f);
+    return () => mq.removeEventListener("change", f);
+  }, [query]);
+  return on;
+}
+
 /** Persist a small UI preference in localStorage (never trading state). */
 export function usePref<T>(key: string, initial: T): [T, (v: T) => void] {
   const [v, setV] = useState<T>(() => {

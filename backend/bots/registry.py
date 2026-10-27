@@ -67,6 +67,13 @@ STRATEGIES = {
                        "0.5 bps Binance futures move in 1 s pulls the threatened side for 1 s. Holds to settlement "
                        "(docs/bots/bot_sim/BOT_SPEC.md).",
     },
+    "stale_taker": {
+        "module": "backend.bots.strategies.stale_taker", "engine": "StaleTakerBot", "config": "StaleTakerConfig",
+        "label": "Stale-quote taker",
+        "description": "BTC 5m, paper only: when Binance futures moves >= spike_bps in 1 s, FAK-buys the favoured token "
+                       "at the ask + 2 ticks before the makers' stale quotes reprice; fixed shares per order, held to "
+                       "settlement. Paper latency drawn from real FAK orders (p50 ~0.7 s). From the study's TAKER_SPEC.md.",
+    },
 }
 MODES = ("paper", "live")     # live: fast_player only (real buys next to its paper twin; see fast_player.py)
 

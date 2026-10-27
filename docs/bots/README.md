@@ -13,6 +13,7 @@ strategy is a **version** listed in the folder's `README.md`.
 | [late_fav/](late_fav/) | Late-favourite maker | `late-fav` |
 | [guard_maker/](guard_maker/) | Guarded two-sided maker | `guard-mm-5m`, `guard-mm-15m` (deleted) |
 | [bot_sim/](bot_sim/) | Imbalance maker (`imb_maker`) | `imb-maker`, `imb-maker-300` |
+| [stale_taker/](stale_taker/) | Stale-quote taker | `stale-taker-1bps`, `stale-taker-2bps` |
 
 ## Layout of a strategy folder
 
