@@ -1,4 +1,5 @@
-"""python -m spikebot   (one bot process; use `python -m spikebot.supervise` to keep it running)"""
+"""python -m spikebot [--variant main|wide]   (one bot process; `python -m spikebot.supervise` keeps it running)"""
+import argparse
 import asyncio
 import logging
 import os
@@ -9,7 +10,10 @@ from .bot import Bot
 
 
 def main():
-    C.LOG_DIR.mkdir(exist_ok=True)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--variant", default="main", choices=sorted(C.VARIANTS))
+    C.apply_variant(ap.parse_args().variant)
+    C.LOG_DIR.mkdir(parents=True, exist_ok=True)
     h = RotatingFileHandler(C.LOG_PATH, maxBytes=20_000_000, backupCount=5, encoding="utf-8")
     h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     root = logging.getLogger()

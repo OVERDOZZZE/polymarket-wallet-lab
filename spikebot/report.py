@@ -1,11 +1,15 @@
 """python -m spikebot.report : paper account summary from logs/spikebot.db."""
 import sqlite3
+import argparse
 import time
 
 from . import config as C
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--variant", default="main", choices=sorted(C.VARIANTS))
+    C.apply_variant(ap.parse_args().variant)
     db = sqlite3.connect(str(C.DB_PATH))
     q = lambda s, *a: db.execute(s, a).fetchall()
     spent = q("SELECT COALESCE(SUM(cost + fee), 0) FROM trades")[0][0]

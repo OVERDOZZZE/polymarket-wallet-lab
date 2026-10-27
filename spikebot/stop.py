@@ -1,10 +1,14 @@
 """python -m spikebot.stop : asks the bot and its supervisor to exit (bot notices within 5 s), then waits."""
+import argparse
 import time
 
 from . import config as C
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--variant", default="main", choices=sorted(C.VARIANTS))
+    C.apply_variant(ap.parse_args().variant)
     C.LOG_DIR.mkdir(exist_ok=True)
     C.STOP_PATH.write_text("stop")
     for _ in range(30):

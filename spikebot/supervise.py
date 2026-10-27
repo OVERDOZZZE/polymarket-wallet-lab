@@ -1,6 +1,7 @@
 """Keeps the bot running: restarts `python -m spikebot` 5 s after any exit, until logs/spikebot.STOP exists.
 
-    nohup .venv/Scripts/python -m spikebot.supervise > logs/spikebot_supervisor.out 2>&1 &"""
+    nohup .venv/Scripts/python -m spikebot.supervise [--variant wide] > logs/spikebot_supervisor.out 2>&1 &"""
+import argparse
 import os
 import subprocess
 import sys
@@ -15,14 +16,17 @@ def say(msg):
 
 
 def main():
-    C.LOG_DIR.mkdir(exist_ok=True)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--variant", default="main", choices=sorted(C.VARIANTS))
+    C.apply_variant(ap.parse_args().variant)
+    C.LOG_DIR.mkdir(parents=True, exist_ok=True)
     C.STOP_PATH.unlink(missing_ok=True)
     C.SUPERVISOR_PID_PATH.write_text(str(os.getpid()))
     say(f"supervisor start pid {os.getpid()}")
     try:
         while not C.STOP_PATH.exists():
             t0 = time.time()
-            p = subprocess.Popen([sys.executable, "-m", "spikebot"], cwd=str(C.ROOT),
+            p = subprocess.Popen([sys.executable, "-m", "spikebot", "--variant", C.VARIANT], cwd=str(C.ROOT),
                                  stdout=subprocess.DEVNULL, stderr=open(C.LOG_DIR / "spikebot_stderr.log", "a"))
             say(f"bot started pid {p.pid}")
             code = p.wait()

@@ -46,3 +46,25 @@ FEE_RATE = 0.07                # taker fee per share = FEE_RATE * p * (1 - p), p
 ORDER_USD = 20.0
 MIN_SHARES = 5.0               # Polymarket's minimum order size
 MAX_WINDOW_USD = 120.0         # total spent in one window
+
+# Named variants (run with --variant NAME; each has its own logs/<name>/ folder and $1,000 account).
+# "main" = the strategy above. "wide" = a looser comparison run (more trades, smaller backtest edge per share).
+VARIANTS = {
+    "main": {},
+    "wide": {"THETA_BPS": 1.0, "P_MAX": 0.85},
+}
+
+
+def apply_variant(name):
+    """Switch this module's settings to a variant; non-main variants log under logs/<name>/."""
+    g = globals()
+    g.update(VARIANTS[name])
+    g["VARIANT"] = name
+    if name != "main":
+        d = LOG_DIR / name
+        g.update(LOG_DIR=d, DB_PATH=d / "spikebot.db", LOG_PATH=d / "spikebot.log",
+                 STATUS_PATH=d / "spikebot_status.json", STOP_PATH=d / "spikebot.STOP", PID_PATH=d / "spikebot.pid",
+                 SUPERVISOR_PID_PATH=d / "spikebot_supervisor.pid", SUPERVISOR_LOG_PATH=d / "spikebot_supervisor.log")
+
+
+VARIANT = "main"

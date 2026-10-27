@@ -23,8 +23,8 @@ CREATE TABLE IF NOT EXISTS events (ts REAL, kind TEXT, detail TEXT);
 
 
 class Ledger:
-    def __init__(self, path=C.DB_PATH):
-        self.db = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
+    def __init__(self, path=None):
+        self.db = sqlite3.connect(str(path or C.DB_PATH), isolation_level=None, check_same_thread=False)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
         spent = self.db.execute("SELECT COALESCE(SUM(cost + fee), 0) FROM trades").fetchone()[0]

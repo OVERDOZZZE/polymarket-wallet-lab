@@ -311,8 +311,8 @@ class Bot:
             await asyncio.sleep(5)
 
     async def run(self):
-        log.info("spikebot start: cash %.2f, theta %.2f bps / %d ms, latency %d ms, price %.2f-%.2f",
-                 self.ledger.cash, C.THETA_BPS, C.SIGNAL_WINDOW_MS, C.SIM_LATENCY_MS, C.P_MIN, C.P_MAX)
+        log.info("spikebot start (variant %s): cash %.2f, theta %.2f bps / %d ms, latency %d ms, price %.2f-%.2f",
+                 C.VARIANT, self.ledger.cash, C.THETA_BPS, C.SIGNAL_WINDOW_MS, C.SIM_LATENCY_MS, C.P_MIN, C.P_MAX)
         self.ledger.event("start", f"cash {self.ledger.cash:.2f}")
         self.ledger.event("config", json.dumps({k: v for k, v in vars(C).items()
                                                 if k.isupper() and isinstance(v, (int, float, str))}))
