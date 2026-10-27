@@ -57,3 +57,38 @@ Track any wallet: paste a 0x address, an @username or a profile link.
 | `data/bots/` | Running bots' live state and logs |
 | `data/cache/` | Shared market resolutions and 1 s reference prices |
 | `archive/` | The previous (v1) app and its raw files |
+
+## Spike-taker paper bot (`spikebot/`)
+
+A small standalone paper bot, separate from the app above. It doesn't import from `backend/` or `research/`,
+and it never places real orders. Its strategy is the profitable part of what @hcrystallash and @wzbbb do on
+BTC 5-minute Up/Down. When Binance BTCUSDT moves 1.5 bps or more within 1 s, it buys the token that move
+favours, as long as that token's ask hasn't repriced yet. Positions are held to settlement. Every parameter is
+in `spikebot/config.py`.
+
+The paper account starts with $1,000. Each simulated buy is matched against the live Polymarket book 500 ms
+after the signal, which stands in for Polymarket's taker delay. It takes the asks up to the signal price + 2 c
+and pays the taker fee of 0.07 × p × (1 − p) per share. Winners pay $1 per share once Gamma shows the result.
+
+| Task | Command (Git Bash, from the project root) |
+|---|---|
+| Start, auto-restart on crash | `nohup .venv/Scripts/python -m spikebot.supervise > logs/spikebot_supervisor.out 2>&1 &` |
+| Stop | `.venv/Scripts/python -m spikebot.stop` (the bot and its supervisor exit within ~5 s) |
+| Results | `.venv/Scripts/python -m spikebot.report` |
+| Run in the foreground (testing) | `.venv/Scripts/python -m spikebot` |
+
+From PowerShell, use `.venv\Scripts\python` instead and run the start command without `nohup` and `&`, or start it
+with `Start-Process -WindowStyle Hidden`.
+
+Output goes to `logs/` (git-ignored):
+
+| File | What |
+|---|---|
+| `spikebot.db` | SQLite: `signals` (every signal acted on or skipped, with the reason), `trades` (fills, the book levels taken), `windows` (positions, winner, PnL), `equity` (once a minute), `events` (start, stop, config) |
+| `spikebot.log` | text log: FILL / MISS / SETTLE lines, warnings |
+| `spikebot_status.json` | live snapshot every 5 s: cash, feed ages, counters |
+| `spikebot_supervisor.log` | restarts |
+
+A restart continues the same account, because cash is rebuilt from the database. Delete `logs/` to start over at
+$1,000. The only requirements are `websockets` and `requests` (`spikebot/requirements.txt`), and the project's
+`.venv` already has both.
