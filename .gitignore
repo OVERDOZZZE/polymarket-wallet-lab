@@ -19,3 +19,9 @@ __pycache__/
 # regenerable study files
 reports/fast_allowance/jobs/
 reports/fast_allowance/probe.json
+
+# research workspace (deletable) and paper-bot runtime
+research/
+logs/
+*.parquet
+*.log
