@@ -1,0 +1,3 @@
+# spikebot needs only these two (both already in the project's root .venv)
+websockets>=12
+requests>=2.31
