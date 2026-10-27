@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS windows (
   fee REAL DEFAULT 0, winner TEXT, payout REAL, pnl REAL, settled_ts REAL);
 CREATE TABLE IF NOT EXISTS equity (ts REAL, cash REAL, open_cost REAL, realized REAL, trades INTEGER);
 CREATE TABLE IF NOT EXISTS events (ts REAL, kind TEXT, detail TEXT);
+CREATE TABLE IF NOT EXISTS probes (
+  signal_ts REAL, slug TEXT, side TEXT, move_bps REAL, ask0 REAL, a250 REAL, a500 REAL, a1000 REAL, a2000 REAL);
 """
 
 
@@ -37,6 +39,9 @@ class Ledger:
     def signal(self, ts, slug, tin, move, side, ask, ask_prev, action, reason=""):
         self.db.execute("INSERT INTO signals (ts, slug, tin, move_bps, side, ask, ask_prev, action, reason) "
                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (ts, slug, tin, move, side, ask, ask_prev, action, reason))
+
+    def probe(self, row):
+        self.db.execute("INSERT INTO probes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", row)
 
     def fill(self, t):
         """t: dict with the trades columns. Debits cash and adds the shares to the window's position."""

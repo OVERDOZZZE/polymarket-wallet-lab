@@ -219,7 +219,22 @@ class Bot:
             return
         self.pending.add(slug)
         self.stats["orders"] += 1
-        asyncio.get_running_loop().create_task(self.execute(t, m, side, move, ask, ask_prev, tin))
+        loop = asyncio.get_running_loop()
+        loop.create_task(self.execute(t, m, side, move, ask, ask_prev, tin))
+        loop.create_task(self.probe(t, m, side, move, ask))
+
+    async def probe(self, t, m, side, move, ask):
+        """Best ask of the favoured token 250 / 500 / 1000 / 2000 ms after each order's signal (the delay curve as
+        seen from this machine), whatever the order did."""
+        seen = []
+        for ms in (250, 500, 1000, 2000):
+            await asyncio.sleep(max(0.0, (t + ms - now_ms()) / 1000.0))
+            b = self.books.get(m[side])
+            seen.append(b.best_ask() if b else None)
+        try:
+            self.ledger.probe((t / 1000, m["slug"], side, move, ask, *seen))
+        except Exception as e:
+            log.warning("probe: %s", e)
 
     async def execute(self, t, m, side, move, ask, ask_prev, tin):
         slug = m["slug"]
