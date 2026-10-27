@@ -88,6 +88,10 @@ class Bot:
         self.last_skip_log = 0.0
         self.stats = collections.Counter()
         self.stop = asyncio.Event()
+        self.live = None
+        if C.LIVE:
+            from .live import LiveTrader
+            self.live = LiveTrader(self.ledger, log)
 
     # ------------------------------------------------------------------ markets and book feed
     def fetch_market(self, start):
@@ -220,6 +224,8 @@ class Bot:
         self.pending.add(slug)
         self.stats["orders"] += 1
         loop = asyncio.get_running_loop()
+        if self.live is not None:
+            loop.create_task(self.live.buy(slug, side, ask, move, tin, t / 1000))
         loop.create_task(self.execute(t, m, side, move, ask, ask_prev, tin))
         loop.create_task(self.probe(t, m, side, move, ask))
 
@@ -294,6 +300,14 @@ class Bot:
     async def settler_loop(self):
         while not self.stop.is_set():
             try:
+                if self.live is not None:
+                    for slug in self.ledger.live_unsettled():
+                        if time.time() < int(slug.rsplit("-", 1)[1]) + C.WINDOW_S + 30:
+                            continue
+                        winner = await asyncio.to_thread(self.fetch_winner, slug)
+                        if winner:
+                            self.ledger.live_settle(slug, winner)
+                            log.info("LIVE SETTLE %s winner %s -> live %s", slug, winner, self.ledger.live_risk())
                 for slug, start, up_sh, dn_sh, cost, fee in self.ledger.unsettled():
                     if time.time() < start + C.WINDOW_S + 30:
                         continue
@@ -324,7 +338,8 @@ class Bot:
                       "binance_age_ms": round(t - self.last_bn) if self.last_bn else None,
                       "books": {tok[:8]: round(t - b.updated) for tok, b in self.books.items()},
                       "windows": [self.markets[s]["slug"] for s in sorted(self.markets)][-2:],
-                      "stats": dict(self.stats), "pid": os.getpid()}
+                      "stats": dict(self.stats), "pid": os.getpid(),
+                      "live": self.live.status() if self.live is not None else None}
                 tmp = C.STATUS_PATH.with_suffix(".tmp")
                 tmp.write_text(json.dumps(st, indent=1))
                 os.replace(tmp, C.STATUS_PATH)
@@ -338,6 +353,8 @@ class Bot:
         self.ledger.event("start", f"cash {self.ledger.cash:.2f}")
         self.ledger.event("config", json.dumps({k: v for k, v in vars(C).items()
                                                 if k.isupper() and isinstance(v, (int, float, str))}))
+        if self.live is not None:
+            self.live.start(asyncio.get_running_loop())
         tasks = [asyncio.create_task(c) for c in (self.markets_loop(), self.binance_loop(), self.settler_loop(),
                                                   self.status_loop())]
         await self.stop.wait()

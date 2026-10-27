@@ -189,6 +189,13 @@ archive/v1-2026-10-21/       old Streamlit code, raw v1 files (profiles/, bot_da
 .tools/node/                 portable Node.js 24 (UI build only)
 run_app.bat                  launcher
 .env / .env.live             settings + secrets (gitignored; see .env.example / .env.live.example)
+spikebot/                    Standalone spike-taker bot (not part of the app; README "Spike-taker paper bot"): Binance spot
+                             1.5 bps / 1 s -> buy the favoured BTC 5m token's stale ask 0.15-0.60, hold to settlement.
+                             Paper by default (self-contained: websockets + requests, logs/ + logs/spikebot.db); variant
+                             `live` sends real FAK buys through backend/trading/gateway.py (runs in ~/app on the server)
+research/                    (git-ignored, deletable) the 2026-10-27 @hcrystallash / @wzbbb study behind spikebot
+logs/                        (git-ignored) spikebot output, one folder per non-main variant
+
 ```
 
 ## 4. Processes and data flow

@@ -32,6 +32,17 @@ def main():
     print(f"signals         {sig}")
     if sw[0]:
         print(f"PnL per share   {100 * sw[1] / max(1e-9, q('SELECT SUM(up_sh + dn_sh) FROM windows WHERE winner IS NOT NULL')[0][0]):+.2f} c")
+    try:
+        lo = q("SELECT result, COUNT(*), COALESCE(SUM(spent),0), COALESCE(SUM(shares),0) FROM live_orders GROUP BY result")
+    except sqlite3.OperationalError:
+        lo = []
+    if lo:
+        realized = q("SELECT COALESCE(SUM((CASE WHEN o.side = r.winner THEN o.shares ELSE 0 END) - o.spent), 0) "
+                     "FROM live_orders o JOIN live_results r ON r.slug = o.slug WHERE o.shares > 0")[0][0]
+        open_cost = q("SELECT COALESCE(SUM(o.spent), 0) FROM live_orders o LEFT JOIN live_results r ON r.slug = o.slug "
+                      "WHERE o.shares > 0 AND r.winner IS NULL")[0][0]
+        print(f"LIVE orders    {[(r[0], r[1]) for r in lo]}")
+        print(f"LIVE money     realized ${realized:+.2f}, open ${open_cost:.2f}, budget ${C.LIVE_BUDGET_USD:.0f}")
     print("last trades:")
     for r in q("SELECT datetime(ts, 'unixepoch'), slug, side, round(move_bps, 2), ask_signal, round(shares, 1), "
                "round(avg_px, 3) FROM trades ORDER BY id DESC LIMIT 10"):

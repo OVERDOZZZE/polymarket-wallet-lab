@@ -47,11 +47,19 @@ ORDER_USD = 20.0
 MIN_SHARES = 5.0               # Polymarket's minimum order size
 MAX_WINDOW_USD = 120.0         # total spent in one window
 
+# live trading (variants "live" / "live-dry" only; see live.py): real orders through the Wallet Lab app's Gateway
+LIVE = False
+LIVE_DRY = False               # run the live order flow but send nothing
+LIVE_ORDER_USD = 3.0           # $ per real fill-and-kill buy (>= 5 shares at prices <= 0.60)
+LIVE_BUDGET_USD = 10.0         # realized live loss + cost still open + a new order may never pass this
+
 # Named variants (run with --variant NAME; each has its own logs/<name>/ folder and $1,000 account).
 # "main" = the strategy above. "wide" = a looser comparison run (more trades, smaller backtest edge per share).
 VARIANTS = {
     "main": {},
     "wide": {"THETA_BPS": 1.0, "P_MAX": 0.85},
+    "live": {"LIVE": True},                       # main's strategy + real orders (Dublin server, app folder)
+    "live-dry": {"LIVE": True, "LIVE_DRY": True},
 }
 
 

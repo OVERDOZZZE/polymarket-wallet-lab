@@ -19,6 +19,10 @@ CREATE TABLE IF NOT EXISTS windows (
   fee REAL DEFAULT 0, winner TEXT, payout REAL, pnl REAL, settled_ts REAL);
 CREATE TABLE IF NOT EXISTS equity (ts REAL, cash REAL, open_cost REAL, realized REAL, trades INTEGER);
 CREATE TABLE IF NOT EXISTS events (ts REAL, kind TEXT, detail TEXT);
+CREATE TABLE IF NOT EXISTS live_orders (
+  id INTEGER PRIMARY KEY, ts REAL, signal_ts REAL, slug TEXT, side TEXT, tin REAL, move_bps REAL, ask_signal REAL,
+  limit_px REAL, usd REAL, result TEXT, spent REAL DEFAULT 0, shares REAL DEFAULT 0, order_id TEXT, ms REAL, error TEXT);
+CREATE TABLE IF NOT EXISTS live_results (slug TEXT PRIMARY KEY, winner TEXT, settled_ts REAL);
 CREATE TABLE IF NOT EXISTS probes (
   signal_ts REAL, slug TEXT, side TEXT, move_bps REAL, ask0 REAL, a250 REAL, a500 REAL, a1000 REAL, a2000 REAL);
 """
@@ -42,6 +46,29 @@ class Ledger:
 
     def probe(self, row):
         self.db.execute("INSERT INTO probes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", row)
+
+    def live_order(self, r):
+        cols = ["ts", "signal_ts", "slug", "side", "tin", "move_bps", "ask_signal", "limit_px", "usd", "result", "spent",
+                "shares", "order_id", "ms", "error"]
+        self.db.execute(f"INSERT INTO live_orders ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                        [r.get(c) for c in cols])
+
+    def live_unsettled(self):
+        return [x[0] for x in self.db.execute(
+            "SELECT DISTINCT o.slug FROM live_orders o LEFT JOIN live_results r ON r.slug = o.slug "
+            "WHERE o.shares > 0 AND r.winner IS NULL").fetchall()]
+
+    def live_settle(self, slug, winner):
+        self.db.execute("INSERT OR REPLACE INTO live_results VALUES (?, ?, ?)", (slug, winner, time.time()))
+
+    def live_risk(self):
+        """Live account: realized PnL of settled windows, cost still open, fills / orders so far."""
+        realized, open_cost = self.db.execute(
+            "SELECT COALESCE(SUM(CASE WHEN r.winner IS NOT NULL THEN (CASE WHEN o.side = r.winner THEN o.shares ELSE 0 END)"
+            " - o.spent END), 0), COALESCE(SUM(CASE WHEN r.winner IS NULL THEN o.spent ELSE 0 END), 0) "
+            "FROM live_orders o LEFT JOIN live_results r ON r.slug = o.slug WHERE o.shares > 0").fetchone()
+        n, fills = self.db.execute("SELECT COUNT(*), COALESCE(SUM(shares > 0), 0) FROM live_orders").fetchone()
+        return {"realized": realized, "open_cost": open_cost, "orders": n, "fills": fills}
 
     def fill(self, t):
         """t: dict with the trades columns. Debits cash and adds the shares to the window's position."""

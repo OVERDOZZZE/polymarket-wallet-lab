@@ -92,3 +92,17 @@ Output goes to `logs/` (git-ignored):
 A restart continues the same account, because cash is rebuilt from the database. Delete `logs/` to start over at
 $1,000. The only requirements are `websockets` and `requests` (`spikebot/requirements.txt`), and the project's
 `.venv` already has both.
+
+### Live mode (real money, Dublin server)
+
+The `live` variant runs main's strategy and also sends a real fill-and-kill buy of $3 for each signal. The worst
+price is the signal ask + 2 c, and the order goes out the moment the signal fires. It uses the app's trading
+Gateway (`backend/trading/gateway.py`, the only code that reads `.env.live`), so it runs from the app folder on the
+server (`~/app`). A hard budget refuses any buy once realized live loss + cost still open + the new order would
+pass $10 (`LIVE_BUDGET_USD`). `live-dry` runs the same flow and sends nothing.
+
+| Task | Command (on the server, in `~/app`) |
+|---|---|
+| Start live | `nohup .venv/bin/python -m spikebot.supervise --variant live > logs/live/supervisor.out 2>&1 &` |
+| Stop live | `.venv/bin/python -m spikebot.stop --variant live` |
+| Live results | `.venv/bin/python -m spikebot.report --variant live` (the "LIVE" lines; orders also appear in the app's `live_orders` table with origin `spikebot-live`) |
