@@ -19,7 +19,8 @@ def main():
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     root.addHandler(h)
-    logging.getLogger("websockets").setLevel(logging.WARNING)
+    for name in ("websockets", "httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
     C.PID_PATH.write_text(str(os.getpid()))
     try:
         asyncio.run(Bot().run())
