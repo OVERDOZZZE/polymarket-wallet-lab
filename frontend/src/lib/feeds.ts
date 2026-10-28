@@ -72,12 +72,14 @@ export const clExact = new Map<number, number>();
 
 /** The Up/Down markets settle on Chainlink's 60 s TWAP (btc-usd-twap-60s stream), at the window start (price
  *  to beat) and end (final price) - not on a single tick. That stream is not on RTDS, so it is computed from
- *  the 1 s ticks: mean of the ticks in (sec - 60, sec]. Matches Polymarket's numbers to ~2 cents.
- *  Same rule as backend/polymarket/markets.py:twap_of. */
+ *  the 1 s ticks: mean of the ticks observed in [sec - 62, sec - 3] (fitted 2026-10-27 on ~950 windows: exact to
+ *  the cent in about half, median error 2 c). Same rule as backend/polymarket/markets.py:twap_of. */
 export const TWAP_S = 60;
+export const TWAP_END_LAG = 3;
 export function twapAt(sec: number, minTicks = 50): number | null {
   let sum = 0, n = 0;
-  for (let s = sec - TWAP_S + 1; s <= sec; s++) {
+  const hi = sec - TWAP_END_LAG;
+  for (let s = hi - TWAP_S + 1; s <= hi; s++) {
     const v = clExact.get(s);
     if (v !== undefined) { sum += v; n++; }
   }
@@ -91,11 +93,12 @@ export function projectedTwap(end: number, spot: number | null): number | null {
   const last = clLastSec();
   if (last === null || spot === null) return null;
   let sum = 0, n = 0;
-  for (let s = end - TWAP_S + 1; s <= Math.min(end, last); s++) {
+  const hi = end - TWAP_END_LAG;
+  for (let s = hi - TWAP_S + 1; s <= Math.min(hi, last); s++) {
     const v = clExact.get(s);
     if (v !== undefined) { sum += v; n++; }
   }
-  const rest = Math.max(0, end - Math.max(last, end - TWAP_S));
+  const rest = Math.max(0, hi - Math.max(last, hi - TWAP_S));
   return n + rest ? (sum + spot * rest) / (n + rest) : null;
 }
 /** Chainlink exchange-time series (ms, price) for strike/settlement lookups. */

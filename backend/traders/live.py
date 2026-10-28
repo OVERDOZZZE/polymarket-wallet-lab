@@ -35,7 +35,7 @@ import requests
 
 from .. import db
 from ..config import CLOB_MARKET_WS as CLOB_WS, DATA_API, GAMMA, RTDS_WS as RTDS_URL
-from ..polymarket.markets import ASSETS, TWAP_S, twap_of, window_bounds, window_slug
+from ..polymarket.markets import ASSETS, TWAP_END_LAG, TWAP_S, twap_of, window_bounds, window_slug
 from ..util import ntp_offset_ms, pct as _pct
 
 CHAINLINK = {k: v["chainlink"] for k, v in ASSETS.items()}
@@ -202,13 +202,14 @@ class LiveHub:
         dq = self.prices.get(CHAINLINK.get(asset, ""))
         if not dq:
             return None
-        lo = (sec - TWAP_S) * 1000.0
+        hi = (sec - TWAP_END_LAG) * 1000.0
+        lo = hi - TWAP_S * 1000.0
         with self.lock:
             ticks = {}
             for ts, v in reversed(dq):
                 if ts <= lo:
                     break
-                if ts <= sec * 1000.0 and ts % 1000 == 0:
+                if ts <= hi and ts % 1000 == 0:
                     ticks[int(ts // 1000)] = v
         return twap_of(ticks, sec)
 

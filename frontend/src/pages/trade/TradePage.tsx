@@ -1,7 +1,7 @@
 // Trade: manual live trading on BTC 5m/15m Up/Down windows, Polymarket layout, lowest-latency data.
 import { useMemo, useState } from "react";
 import { Card, Seg } from "../../components/ui";
-import { FEEDS, FeedId, TWAP_S, bookLat, clLastSec, feeds, projectedTwap, twapAt } from "../../lib/feeds";
+import { FEEDS, FeedId, TWAP_END_LAG, TWAP_S, bookLat, clLastSec, feeds, projectedTwap, twapAt } from "../../lib/feeds";
 import { clock, hm, money, num } from "../../lib/format";
 import { useMedia, useNow, usePref } from "../../lib/hooks";
 import { tradeSocket } from "../../lib/tradeSocket";
@@ -37,7 +37,7 @@ export default function TradePage() {
   const cl = feeds.chainlink.last;
   // It settles on the 60 s TWAP at the close, so "current" is the rolling 60 s TWAP (Polymarket shows the same)
   const lastSec = clLastSec();
-  const cur = lastSec !== null ? twapAt(lastSec) : null;
+  const cur = lastSec !== null ? twapAt(lastSec + TWAP_END_LAG) : null;      // the newest 60 ticks
   const delta = cur !== null && strike.value !== null ? cur - strike.value : null;
   // Last minute: where the final TWAP is heading = its ticks so far + spot for the seconds left. Spot is
   // Coinbase + its usual gap to Chainlink (Chainlink reaches us ~1.4 s late), else the last Chainlink tick.

@@ -24,6 +24,8 @@ BOTS_DIR = DATA_DIR / "bots"                 # bots/<id>/state.json, control.jso
 CACHE_DIR = DATA_DIR / "cache"               # resolutions.json, klines/<SYMBOL>/<day>.csv
 RECORDINGS_DIR = DATA_DIR / "recordings"       # recordings/<day>/<HH>.tsv.gz raw market feeds (backend/recorder.py)
 IMPORT_DIR = DATA_DIR / "import"               # data from other machines; btc5m/ = the old logger PC (scripts/import_btc5m.py)
+LATENCY_DIR = DATA_DIR / "latency"             # raw latency measurements (scripts/latency_probe.py, latency_history.py)
+LATENCY_PROFILE = ROOT / "backend" / "bots" / "latency_profile.json"   # measured delays for simulations (bots/latency.py)
 FRONTEND_DIST = ROOT / "frontend" / "dist"
 
 HOST = ENV.get("HOST", "127.0.0.1")

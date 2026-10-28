@@ -141,6 +141,11 @@ class Gateway:
     def _err(self, msg):
         self.errors.append((time.time(), str(msg)[:300]))
 
+    def recent_errors(self, n=5, max_age_s=3600):
+        """The last n errors from the past hour: a bot page must not show a long-fixed blip as if it were current."""
+        cut = time.time() - max_age_s
+        return [e for e in self.errors if e[0] >= cut][-n:]
+
     # ------------------------------------------------------------------ push to browsers
     def publish(self, msg):
         if not self.loop:

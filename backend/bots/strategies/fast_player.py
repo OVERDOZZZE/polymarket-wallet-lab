@@ -814,7 +814,7 @@ class FastBot(PaperBot):
                          "pnl_series": series,
                          "windows": sorted(self.live.values(), key=lambda w: -w["start"])[:60],
                          "log": list(self.live_log)[-100:],
-                         "gw_errors": list(gw.errors)[-5:] if gw else [],
+                         "gw_errors": gw.recent_errors() if gw else [],
                          "gw_reconnects": gw.reconnects if gw else 0}
         s["signals"] = list(self.signals)[-150:]
         s["spike"] = None if self.spike is None else {"id": self.spike["id"], "move": self.spike["move"] * 1e4}

@@ -76,6 +76,9 @@ backend/                     Python package (server, engines, analysis). Entry: 
     replay.py                offline replay of data/recordings through any bot configs (same engine code, virtual
                              clock, scored on official winners): python -m backend.bots.replay --hours 6 --bot <id>
                              (--dir <folder>: another recordings folder, e.g. data/import/btc5m/recordings_dublin)
+    latency.py               measured delays for every simulation: Latency(site).draw/pick(key, best|typical|worst),
+                             fak_match_ms (taker delay model), maker_times. Data: latency_profile.json (config
+                             LATENCY_PROFILE, built by scripts/latency_build.py). Keys + use: docs/latency/README.md
     strategies/market_maker.py   PaperBot engine + rebate market maker (CrouchPredictions reconstruction).
                              Subclass hooks: CONFIG, STRATEGY, _side_quotes(), _blocked(), _maybe_take()
     strategies/ml_maker.py   MLBot: machinelearned reconstruction (calibration notes in its docstring)
@@ -91,7 +94,10 @@ backend/                     Python package (server, engines, analysis). Entry: 
                              live_daily_loss_usd (windows started today, UTC) count open $ as lost,
                              live_paused = kill switch. State `live` also has fill counts and `pnl_series` (cumulative settled PnL)
     strategies/late_fav.py   LateFavBot: resting 97-99c bids on the near-certain side in a window's last 2 min, held
-                             to settlement, pulled on fast BTC moves (from the old PC's study, reports/)
+                             to settlement, pulled on fast BTC moves (from the old PC's study, reports/). v2 (gate
+                             "lock"): bids only once the final TWAP is locked (z + $ margin); queue_cancel_credit off =
+                             pessimistic queue. Live (mode live): the paper quotes mirrored as real post-only
+                             bids via the Gateway (live_size, live_budget_usd, live_loss_limit_usd, live_paused)
     strategies/guard_maker.py  GuardMakerBot: two-sided post-only bids around fair (PaperBot quoting) + the fast
                              player's spike signal (subclass of FastBot): a spike cancels the threatened side at once
                              and keeps it out for pull_ms. Own cancel latency; prints judged at their match time
@@ -171,16 +177,29 @@ scripts/check_imb_maker.py   offline check of imb_maker against docs/bots/bot_si
                              and of its live layer against a fake gateway (python -m scripts.check_imb_maker)
 scripts/check_stale_taker.py offline check of stale_taker's entry rules, latency draw and paper fill
 scripts/imb_maker_live.py    server: create bot imb-maker-live (dry run) / dry / arm / disarm
+scripts/late_fav_v2.py       server: create the late_fav lock-gate paper bots (v2, v2-ladder, v3, v3-safe, v3-big)
+scripts/late_fav_live.py     server: bot late-fav-v3-live (live_size 25, $50 budget, $20 loss limit): create / dry / arm / disarm
+scripts/latency_probe.py     live, no orders: network (DNS/TCP/TLS/keep-alive HTTP per venue) + feed ages/gaps/pings,
+                             one lean process per feed -> data/latency/probe-<site>-*.json (--site dublin|home)
+scripts/latency_history.py   server: recordings + live_orders + imb window logs -> feed ages as the bots got them, maker
+                             reprice after Binance moves, FAK/post-only/cancel/fill-notice timings -> data/latency/history-*.json
+scripts/latency_build.py     merges the newest probe/history files -> backend/bots/latency_profile.json + FAK model check
 scripts/feed_latency_test.py  standalone feed race (Binance/Coinbase/Chainlink: spike race, cross-correlation, TCP
                              connect, SNTP); places no orders. Output -> reports/latency_result.txt (Dublin, 10-23)
 deploy/install.sh            Linux server: install/update systemd services (server, recorder, one unit per bot)
 deploy/systemd/              pmtool-server, pmtool-recorder, pmtool-bot@<id> unit files
+docs/latency/README.md       the measured delays: method, every key, numbers, how a sim must use them
+docs/polymarket/             Polymarket rules/mechanics research (2026-10-27): README.md (index + ranked findings + our
+                             beliefs checked), one file per topic (trading rules, fees/rebates, Up/Down markets, latency,
+                             account/KYC, API limits/WS, settlement, programs), changelog_timeline, opportunities,
+                             open_questions (support messages), sources. Read before changing order, feed or fee logic
 docs/bots/                   the user's write-ups of bot versions: README.md (index + version template), one folder
                              per strategy (<strategy>/README.md = versions table + notes, specs, results/ for small
                              exported results). Add a row there when creating a bot. Runtime data stays in data/ + DB
 docs/bots/fast_player/FAST_PLAYER_SPEC.md  spec of the user's earlier btc5m fast bots (fast_player.py rebuilt from it)
 docs/bots/bot_sim/           imb_maker's folder: BOT_SPEC.md (the study's build description, phases 1-2) + strategy.py
                              (its reference decision code; imb_maker.py is the port)
+docs/bots/imb_maker/         imb_maker live post-mortems (LIVE_POSTMORTEM_2026-10-27.md: imb-maker-10 vs its twin / replay)
 docs/TRADER_RE_PLAN.md       reference (suggestions only) for re-doing the CrouchPredictions / machinelearned study:
                              how to collect each data source, analysis options, bot-building options
 reports/                     study outputs: ULTIMATE_REPORT.md + ult_*.txt (old logger PC's 64 h study),
@@ -237,7 +256,7 @@ WAL mode; every process/thread opens its own connection via `db.conn()`. Schema 
 |---|---|---|---|
 | `traders` | id | traders/store.py | tracked wallets: name, wallet, asset, window, coverage (JSON), notes, flags |
 | `trader_events` | id | traders/live.py | live-captured trades/redeems of watched traders (`data` = full event JSON) |
-| `bots` | id | bots/registry.py, control.py | strategy, mode (paper/live), config JSON, current `account` number, `archived` (time, else NULL: hidden from the Bots page and its totals, start refused, runner exits 0; column added to old DBs by `db.ADDED_COLUMNS`). Bots: `crouch-mm` (market_maker), `ml-copy` (ml_maker; `ml-join` (join_copy) deleted 2026-10-23), `crouch-v2` (crouch_v2), `fast-hold` / `fast-scalp` / `fast-value` and `fast-hold-v2` / `fast-scalp-v2` / `fast-value-v2` (fast_player), `late-fav` (late_fav), `imb-maker` / `imb-maker-300` (imb_maker; $5k B 60 / $300 B 5 cap 25; Dublin since 2026-10-25), `imb-maker-live` (imb_maker live, scripts/imb_maker_live.py; archived), `imb-maker-10` (imb_maker live, $10 measurement run, 2026-10-27), `stale-taker-1bps` / `stale-taker-2bps` (stale_taker, $1k paper, 10 sh; Dublin since 2026-10-26) (guard_maker bots `guard-mm-5m` / `guard-mm-15m` deleted from the server 2026-10-23) |
+| `bots` | id | bots/registry.py, control.py | strategy, mode (paper/live), config JSON, current `account` number, `archived` (time, else NULL: hidden from the Bots page and its totals, start refused, runner exits 0; column added to old DBs by `db.ADDED_COLUMNS`). Bots: `crouch-mm` (market_maker), `ml-copy` (ml_maker; `ml-join` (join_copy) deleted 2026-10-23), `crouch-v2` (crouch_v2), `fast-hold` / `fast-scalp` / `fast-value` and `fast-hold-v2` / `fast-scalp-v2` / `fast-value-v2` (fast_player), `late-fav` (late_fav), `late-fav-v2` / `late-fav-v2-ladder` / `late-fav-v3` / `late-fav-v3-safe` / `late-fav-v3-big` (late_fav gate "lock", paper, scripts/late_fav_v2.py), `imb-maker` / `imb-maker-300` (imb_maker; $5k B 60 / $300 B 5 cap 25; Dublin since 2026-10-25), `imb-maker-live` (imb_maker live, scripts/imb_maker_live.py; archived), `imb-maker-10` (imb_maker live, $10 measurement run, 2026-10-27), `stale-taker-1bps` / `stale-taker-2bps` (stale_taker, $1k paper, 10 sh; Dublin since 2026-10-26) (guard_maker bots `guard-mm-5m` / `guard-mm-15m` deleted from the server 2026-10-23) |
 | `bot_fills` | id; (bot_id, account, ts) | bot process | every (paper) fill incl. maker/taker, rebate, markout. Sells (fast_player scalp) have negative `shares` and `usd` (= net cash received) |
 | `bot_windows` | (bot_id, account, slug) | bot process | per-window settlement record (`data` JSON), upserted until official |
 | `bot_equity` | (bot_id, account, ts) | bot process | portfolio value every 30 s (PnL chart) |
@@ -261,6 +280,7 @@ WAL mode; every process/thread opens its own connection via `db.conn()`. Schema 
 | `data/cache/klines/<SYMBOL>/<day>.csv` | Binance 1 s closes per UTC day | shared by traders |
 | `data/recordings/<YYYY-MM-DD>/<HH>.tsv.gz` | raw feeds, one line `recv_ms<TAB>source<TAB>message` (source cb = Coinbase ticker, or `matches` messages when Coinbase refused the ticker, bn, bf = Binance futures aggTrade (bookTicker 14:32-14:40Z on 10-22), kr, cl, act, info, bk:<slug>) | written by backend/recorder.py (~4 GB/day, 7 days kept; one gzip member per recorder start, closed on SIGTERM); read by bots/replay.py (`_gz_lines` also recovers hours where a killed recorder left a member unterminated) |
 | `data/recordings/recorder.log` | recorder output | |
+| `data/latency/probe-<site>-<utc>.json`, `history-<utc>.json` | raw latency measurements (summaries + 101 quantiles) | scripts/latency_probe.py / latency_history.py; merged by latency_build.py into backend/bots/latency_profile.json (committed) |
 | `data/import/btc5m/` | the old logger PC's export (2026-10-19..22, 64 h): `INVENTORY.md` (read first), `raw_db/btc5m.db` (all feeds, its paper bots, windows), `bot_dbs/` (its live bots), `code/` (old project + analysis, `analysis/data/*.pkl` need pandas >= 3), `extracts/` | read-only input |
 | `data/import/btc5m/recordings_{home,dublin}/` | that data converted to the recorder format by scripts/import_btc5m.py | replay with `--dir` |
 
@@ -332,7 +352,8 @@ the home PC are separate.
 * Window slug `<asset>-updown-<5|15>m-<start epoch>`; window = [start, start + minutes·60).
 * Settlement: Chainlink's 60 s TWAP stream (`btc-usd-twap-60s`) at the window start (price to beat) and end
   (final price); Up wins if final ≥ price to beat. Not on RTDS → computed from the 1 s btc/usd ticks as the
-  mean over (B−60, B] (`polymarket/markets.py:twap_of`, `lib/feeds.ts:twapAt`; ~2¢ from Polymarket's numbers).
+  mean of the ticks observed in [B−62, B−3] (`polymarket/markets.py:twap_secs` / `twap_of`, `lib/feeds.ts:twapAt`;
+  fitted 2026-10-27: exact to the cent in ~half of the windows, median 2¢; the outcome is fixed 3 s before the end).
   Polymarket's own values: Gamma **event** `eventMetadata.priceToBeat` / `finalPrice` (`fetch_window_prices`;
   priceToBeat appears only after the previous window resolved). The single boundary tick and
   polymarket.com/api/crypto/crypto-price (= that tick) get ~12% of windows wrong: don't use them.

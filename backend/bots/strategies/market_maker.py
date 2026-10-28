@@ -51,7 +51,7 @@ import requests
 from ... import db
 from ...config import (BINANCE_WS, BOTS_DIR, CLOB_MARKET_WS as CLOB_WS, COINBASE_WS, GAMMA,
                        RTDS_WS as RTDS_URL)
-from ...polymarket.markets import fetch_window_prices, twap_of
+from ...polymarket.markets import TWAP_END_LAG, fetch_window_prices, twap_of, twap_secs
 from ...util import ntp_offset_ms, write_text_atomic
 
 CL_SYMBOL = "btc/usd"
@@ -987,7 +987,7 @@ class PaperBot:
 
     def _twap(self, sec):
         """Chainlink 60 s TWAP at second `sec` from our exact-second ticks, or None if we lack them."""
-        return twap_of({x: self.cl_1s[x] for x in range(int(sec) - 59, int(sec) + 1) if x in self._cl_exact}, sec)
+        return twap_of({x: self.cl_1s[x] for x in twap_secs(sec) if x in self._cl_exact}, sec)
 
     def _strike(self, m):
         """Price to beat = Chainlink 60 s TWAP at the window's start, from our own ticks (ready ~1.5 s after the
@@ -1059,14 +1059,15 @@ class PaperBot:
         if K is None or S is None:
             return None
         sig = self._vol() * S                  # $ per sqrt(s)
-        tau = max(m.end - now_s, 0.0)
+        last = m.end - TWAP_END_LAG if m.twap else m.end      # the TWAP's last second (markets.twap_secs)
+        tau = max(last - now_s, 0.0)
         W = float(m.twap_s) if m.twap else 0.0
         if not m.twap:
             mean, var = S, sig * sig * tau
         elif tau >= W:
             mean, var = S, sig * sig * (tau - W + W / 3.0)
         else:
-            known, n = self._avg_cl(m.end - W + 1, now_s + 1)    # TWAP seconds (end - W, end] seen so far
+            known, n = self._avg_cl(last - W + 1, min(now_s, last) + 1)   # TWAP seconds (last - W, last] seen so far
             if known is None:
                 known = S
             mean = ((W - tau) * known + tau * S) / W

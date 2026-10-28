@@ -29,13 +29,22 @@ ASSETS = {
 WINDOW_CHOICES = [5, 15]
 VARIANT = {5: "fiveminute", 15: "fifteen"}          # name used by polymarket.com/api/crypto/crypto-price
 TWAP_S = 60                                          # Chainlink btc-usd-twap-60s
+TWAP_END_LAG = 3                                     # ... over the ticks observed up to 3 s before the boundary
 TWAP_MIN_TICKS = 50                                  # need most of the minute's 1 s ticks to trust our TWAP
 
 
+def twap_secs(sec):
+    """The seconds whose Chainlink ticks make up the 60 s TWAP at boundary `sec`: [sec - 62, sec - 3]. Fitted
+    2026-10-27 on ~950 windows against priceToBeat: exact to the cent in about half, median error 2 c (the former
+    (sec - 60, sec]: 75 c). So a window's outcome is fixed 3 s before it ends."""
+    hi = int(sec) - TWAP_END_LAG
+    return range(hi - TWAP_S + 1, hi + 1)
+
+
 def twap_of(ticks, sec):
-    """60 s TWAP at second `sec` from {second: Chainlink value} (1 tick per second, stamped on the second):
-    the mean of the ticks in (sec - 60, sec]. None if fewer than TWAP_MIN_TICKS of them are present."""
-    xs = [ticks[s] for s in range(int(sec) - TWAP_S + 1, int(sec) + 1) if s in ticks]
+    """60 s TWAP at boundary second `sec` from {second: Chainlink value} (1 tick per second, stamped on the
+    second): the mean of the ticks in twap_secs(sec). None if fewer than TWAP_MIN_TICKS of them are present."""
+    xs = [ticks[s] for s in twap_secs(sec) if s in ticks]
     return sum(xs) / len(xs) if len(xs) >= TWAP_MIN_TICKS else None
 
 

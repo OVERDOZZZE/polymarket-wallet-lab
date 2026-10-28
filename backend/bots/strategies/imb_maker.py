@@ -1266,4 +1266,4 @@ class ImbMakerBot(GuardMakerBot):
                            for o in sorted(resting, key=lambda o: (o["slug"], o["side"], -o["price"]))][:60],
                 "log": list(self.live_log)[-100:], "rate_limit": dict(self.fo.rl) if self.fo is not None else None,
                 "inflight": sum(1 for o in resting if o["status"] == "sending"),
-                "gw_errors": list(gw.errors)[-5:] if gw else [], "gw_reconnects": gw.reconnects if gw else 0}
+                "gw_errors": gw.recent_errors() if gw else [], "gw_reconnects": gw.reconnects if gw else 0}
