@@ -129,7 +129,7 @@ export function OrderTicket({ m, acct, now, outcome, setOutcome, limitPx, setLim
           {(["BUY", "SELL"] as const).map((s) => <button key={s} className={side === s ? "on" : ""} onClick={() => setSide(s)}>{s === "BUY" ? "Buy" : "Sell"}</button>)}
         </div>
         <span className="spacer" />
-        <select className="input" style={{ width: 110, height: 32 }} value={type} onChange={(e) => { setType(e.target.value as any); if (e.target.value === "market") setLimitPx(null); }}>
+        <select className="input" style={{ width: 116, height: 36, borderRadius: 999 }} value={type} onChange={(e) => { setType(e.target.value as any); if (e.target.value === "market") setLimitPx(null); }}>
           <option value="market">Market</option>
           <option value="limit">Limit</option>
         </select>
@@ -209,7 +209,7 @@ export function OrderTicket({ m, acct, now, outcome, setOutcome, limitPx, setLim
         </>}
         {type === "market" && <>
           <span className="l" title="Worst price sent with the order (fill-and-kill): your price limit">Price limit</span>
-          <span className="v">{cents(sendPx)} <select className="input" style={{ height: 24, width: 74, display: "inline", padding: "0 4px", marginLeft: 6 }} value={slip} onChange={(e) => setSlip(Number(e.target.value))} title="Slippage allowed beyond the book's worst level">
+          <span className="v">{cents(sendPx)} <select className="input" style={{ height: 28, width: 78, display: "inline", padding: "0 8px", marginLeft: 6, borderRadius: 999 }} value={slip} onChange={(e) => setSlip(Number(e.target.value))} title="Slippage allowed beyond the book's worst level">
             {[0, 0.01, 0.02, 0.03, 0.05, 0.1].map((s) => <option key={s} value={s}>+{Math.round(s * 100)}¢</option>)}
           </select></span>
         </>}
@@ -224,7 +224,7 @@ export function OrderTicket({ m, acct, now, outcome, setOutcome, limitPx, setLim
       </button>
       {problems.length > 0 && <p className="hint" style={{ marginTop: 8 }}>{problems[0]}</p>}
 
-      <div className="row" style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+      <div className="live-row">
         <div>
           <div style={{ fontWeight: 650 }}>Live trading</div>
           <div className="muted small">{st?.enabled ? `${money(acct.usdc, 2)} USDC · max ${money(st.max_order_usd)}/order` : "unavailable"}</div>

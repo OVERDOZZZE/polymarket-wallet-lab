@@ -71,6 +71,10 @@ SOURCES = ("coinbase", "kraken", "binance", "binance_fut")
 KR_SYMBOL = "BTC/USD"
 CL_STALE_MS = 5000          # Chainlink ticks arrive ~1.3 s after their timestamp, one per second
 EATEN_MS = 3000             # liquidity our paper takers used stays used this long (the real feed never removes it)
+# signal_feeds presets (sources, combine); "custom" keeps the config's own. Replay 2026-11-02 (scripts/fast_source_replay.py,
+# queue model): binance_fut +$65 / +$42 on London 11-01 / Dublin 10-24..25, classic -$35 / +$2 (17 vs 14 fills: thin)
+FEED_PRESETS = {"binance_fut": (("binance_fut",), "mean"),
+                "classic": (("coinbase", "kraken", "binance"), "mean")}
 
 
 @dataclasses.dataclass
@@ -78,6 +82,7 @@ class FastConfig:
     bankroll: float = 500.0
     windows: tuple = (5,)
     # signal
+    signal_feeds: str = "custom"      # binance_fut | classic | custom: a preset that sets sources + combine (FEED_PRESETS)
     sources: tuple = ("coinbase", "kraken", "binance")   # + binance_fut (USD-M futures bookTicker)
     spike_bps: float = 2.0
     lookback_ms: float = 1000.0
@@ -121,6 +126,11 @@ class FastConfig:
     live_daily_loss_usd: float = 0.0  # > 0: the same limit on the windows started today (UTC)
     live_max_order_usd: float = 25.0
     live_paused: bool = False
+
+    def __post_init__(self):
+        preset = FEED_PRESETS.get(self.signal_feeds)
+        if preset:
+            self.sources, self.combine = preset
 
     @classmethod
     def from_dict(cls, d):
@@ -188,14 +198,9 @@ class FastBot(PaperBot):
     async def _main(self):
         self._loop = asyncio.get_running_loop()
         self._stop = asyncio.Event()
-        src = set(self.cfg.sources)
+        self._feeds = {}
+        self._ensure_feeds()
         feeds = [self._coinbase(), self._chainlink()]
-        if "binance" in src or self.cfg.spot_source != "coinbase":
-            feeds.append(self._binance())
-        if "kraken" in src:
-            feeds.append(self._kraken())
-        if "binance_fut" in src:
-            feeds.append(self._binance_fut())
         if self.mode == "live":
             from ...trading.gateway import Gateway
             self.gw = Gateway()
@@ -206,10 +211,27 @@ class FastBot(PaperBot):
         tasks = [asyncio.create_task(c) for c in (*feeds, self._scheduler(), self._ticker(), self._clock(),
                                                   self._resolver(), self._official_prices())]
         await self._stop.wait()
+        tasks += list(self._feeds.values())
         for t in tasks + list(self._ws_tasks.values()):
             t.cancel()
         self._ws_tasks.clear()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _ensure_feeds(self):
+        """Start the optional exchange feeds the config needs; also after a settings change on the running bot (a
+        feed no longer needed keeps running: the signal reads only cfg.sources)."""
+        src = set(self.cfg.sources)
+        need = {"binance": "binance" in src or self.cfg.spot_source != "coinbase", "kraken": "kraken" in src,
+                "binance_fut": "binance_fut" in src}
+        start = {"binance": self._binance, "kraken": self._kraken, "binance_fut": self._binance_fut}
+        for k, on in need.items():
+            if on and k not in self._feeds:
+                self._feeds[k] = asyncio.create_task(start[k]())
+
+    def set_config(self, **kw):
+        super().set_config(**kw)
+        if self._loop is not None and getattr(self, "_feeds", None) is not None and self.running:
+            self._loop.call_soon_threadsafe(self._ensure_feeds)
 
     async def _kraken(self):
         import websockets

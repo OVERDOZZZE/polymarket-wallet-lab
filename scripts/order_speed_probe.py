@@ -1,7 +1,8 @@
 """Order speed probe (server, real orders that cannot fill): how fast can we post and cancel through
 backend/trading/fastorders.py, measured on our clock and on the exchange's book feed.
 
-    .venv/bin/python -m scripts.order_speed_probe [n]        # n orders per test (default 30)
+    .venv/bin/python -m scripts.order_speed_probe [n] [--site london]       # n orders per test (default 30)
+    .venv/bin/python -m scripts.order_speed_probe --summarize data/probe/<utc>.json [--site london]   # no orders
 
 Every order is a post-only BUY of 5.37 Up shares at 0.02 (~$0.11) on the NEXT 5m window (its book sits near
 0.50 before it opens, so nothing can fill), cancelled within the test. Tests:
@@ -10,7 +11,8 @@ Every order is a post-only BUY of 5.37 Up shares at 0.02 (~$0.11) on the NEXT 5m
   burst5     5 posts at once, then their 5 cancels at once
 Pacing keeps us far below the account's rate limits (40 orders/s): another bot shares the wallet.
 Only our own order ids are ever cancelled; a final sweep cancels any of ours still open (size 5.37 at 0.02).
-Output: data/probe/<utc>.json and a summary.
+Output: data/probe/<utc>.json and a summary; with --site also data/latency/orders-<site>-<utc>.json (post / cancel
+ack, on / off the book) for scripts/latency_build.py.
 """
 import asyncio
 import json
@@ -50,7 +52,7 @@ def book_listener(tokens, out, stop):
 
 
 def main():
-    n = int(sys.argv[1]) if len(sys.argv) > 1 else 30
+    n = next((int(a) for a in sys.argv[1:] if a.isdigit()), 30)
     from backend.polymarket.markets import fetch_market, window_slug
     from backend.trading.fastorders import FastOrders
     from backend.trading.gateway import Gateway
@@ -129,6 +131,52 @@ def main():
                              "mismatch": fo.mismatch}, default=str))
     print("saved", f, "| local id verified:", fo.verified, "mismatches:", fo.mismatch)
     summarize(rows, book)
+    if "--site" in sys.argv:
+        write_site(rows, book, sys.argv[sys.argv.index("--site") + 1], str(f))
+
+
+def book_times(rows, book):
+    """Exchange-clock delays of the ACCEPTED orders: send -> on the book, cancel sent -> off the book, and the feed
+    delay (receive - exchange time) of those book events. A book change of k x SIZE counts as k orders (bursts)."""
+    ev, prev = [], None
+    for recv, ex, _a, sz in book:
+        if prev is not None:
+            k = (sz - prev) / SIZE
+            if abs(k) >= 0.99 and abs(k - round(k)) < 0.01:
+                ev += [(ex, recv, 1 if k > 0 else -1)] * int(abs(round(k)))
+        prev = sz
+    ok = [r for r in rows if r["post"]["ok"]]
+
+    def match(ts, evs):
+        d, j = [], 0
+        for t in sorted(ts):
+            while j < len(evs) and evs[j][0] < t - 5:
+                j += 1
+            if j < len(evs) and evs[j][0] - t < 1500:
+                d.append((evs[j][0] - t, evs[j][1] - evs[j][0]))
+                j += 1
+        return d
+    on = match([r["t_send"] for r in ok], sorted(e for e in ev if e[2] == 1))
+    off = match([r["t_csend"] for r in ok], sorted(e for e in ev if e[2] == -1))
+    return [x for x, _ in on], [x for x, _ in off], [y for _, y in on + off]
+
+
+def write_site(rows, book, site, src):
+    """data/latency/orders-<site>-<utc>.json: this site's order timings for scripts/latency_build.py."""
+    from backend.config import LATENCY_DIR
+    from scripts.latency_probe import summary
+    seq = [r for r in rows if r["test"] in ("seq", "burst5")]          # pipelined posts mostly lose to their cancel
+    on, off, feed = book_times(rows, book)
+    res = {"site": site, "source": src, "orders": len(rows), "accepted": sum(r["post"]["ok"] for r in rows),
+           "post_ack": summary([r["post"]["post_ms"] for r in seq if r["post"]["ok"]]),
+           "cancel_ack": summary([r["cancel"]["ms"] for r in seq if r["cancel"]["canceled"]]),
+           "on_book": summary(on), "off_book": summary(off), "book_feed": summary(feed)}
+    LATENCY_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = Path(src).stem[-15:] if Path(src).stem[-15:].replace("-", "").isdigit() else time.strftime(
+        "%Y%m%d-%H%M%S", time.gmtime())
+    f = LATENCY_DIR / f"orders-{site}-{stamp}.json"
+    f.write_text(json.dumps(res, indent=1))
+    print("saved", f)
 
 
 def summarize(rows, book):
@@ -147,30 +195,19 @@ def summarize(rows, book):
         nc = [list(r["cancel"]["not_canceled"].values())[0] for r in R if r["cancel"]["not_canceled"]]
         if nc:
             print("  not cancelled:", nc[:3])
-    # book: +SIZE appearances / -SIZE removals at our level, matched to sends in time order
-    ev, prev = [], None
-    for recv, ex, _a, sz in book:
-        if prev is not None and abs(abs(sz - prev) - SIZE) < 1e-6:
-            ev.append((ex, recv, 1 if sz > prev else -1))
-        prev = sz
-    adds = [e for e in ev if e[2] == 1]
-    rems = [e for e in ev if e[2] == -1]
-    sends = sorted(r["t_send"] for r in rows)
-    csends = sorted(r["t_csend"] for r in rows)
-
-    def match(ts, evs):
-        d, j = [], 0
-        for t in ts:
-            while j < len(evs) and evs[j][0] < t - 5:
-                j += 1
-            if j < len(evs) and evs[j][0] - t < 3000:
-                d.append(evs[j][0] - t)
-                j += 1
-        return d
-    print(f"\nbook feed: {len(adds)} appearances, {len(rems)} removals of a {SIZE} order at {PRICE}")
-    print("  send -> on the book (exchange ms)    ", q(match(sends, adds)))
-    print("  cancel sent -> off the book (exch ms)", q(match(csends, rems)))
+    on, off, feed = book_times(rows, book)       # accepted orders only (pipelined posts often lose to their cancel)
+    print(f"\nbook feed: {len(on)} appearances, {len(off)} removals of our {SIZE} orders at {PRICE}")
+    print("  send -> on the book (exchange ms)    ", q(on))
+    print("  cancel sent -> off the book (exch ms)", q(off))
+    print("  book feed delay (receive - exchange) ", q(feed))
 
 
 if __name__ == "__main__":
-    main()
+    if "--summarize" in sys.argv:                 # re-read a saved run, no orders: --summarize <json> [--site s]
+        src = sys.argv[sys.argv.index("--summarize") + 1]
+        d = json.loads(Path(src).read_text())
+        summarize(d["rows"], d["book"])
+        if "--site" in sys.argv:
+            write_site(d["rows"], d["book"], sys.argv[sys.argv.index("--site") + 1], src)
+    else:
+        main()

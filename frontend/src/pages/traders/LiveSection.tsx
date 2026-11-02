@@ -110,7 +110,7 @@ function LivePanel({ t, L, now }: { t: any; L: any; now: number }) {
                      { label: "Up fills", color: C.up, points: true }, { label: "Down fills", color: C.down, points: true }]} />
         </Card>
       </div>
-      <div className="grid3" style={{ marginTop: 14, gridTemplateColumns: "1fr 1fr 3fr" }}>
+      <div className="grid-books">
         <Card title="Up book"><Ladder b={L.books.up} /></Card>
         <Card title="Down book"><Ladder b={L.books.down} /></Card>
         <Card title="Event feed">

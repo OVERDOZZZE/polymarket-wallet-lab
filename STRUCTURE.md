@@ -60,6 +60,9 @@ backend/                     Python package (server, engines, analysis). Entry: 
   cli.py                     command line
   polymarket/markets.py      ASSETS, window math (window_bounds/window_slug/slug_start), Gamma lookups
                              (fetch_market, fetch_winner), historical slug/title parsing (market_map)
+  polymarket/profile.py      a wallet's public profile (Profile page): Gamma public-profile + Data API v2 user-stats,
+                             user-pnl, leaderboard (timePeriod=all), positions, activity (cursor paging); cached a few s.
+                             user-pnl-api / lb-api hosts are retired (410)
   traders/
     store.py                 Trader dataclass (DB row) + per-trader files + shared caches (resolutions, klines)
     sources.py               remote fetches: data-api activity paging, handle lookup, CLOB resolutions, Binance 1s
@@ -88,6 +91,8 @@ backend/                     Python package (server, engines, analysis). Entry: 
     strategies/fast_player.py  FastBot: latency taker (docs/bots/fast_player/FAST_PLAYER_SPEC.md rebuilt): Coinbase/Kraken/Binance spike ->
                              FAK buy before the book reprices; hold or scalp exit; FAK fills on the book at match time
                              (Polymarket clock), own Kraken + Binance futures feeds, sells, signal log (`signals`).
+                             `signal_feeds` preset (FEED_PRESETS): binance_fut | classic (cb + kr + bn mean) | custom
+                             (own sources/combine); a settings change starts any feed it needs on the running bot.
                              Live mode (bots.mode='live', read at start): own Gateway, real FAK buy of paper $ x
                              live_scale (or live_stake_frac x live USDC) next to each paper entry, live ledger (state `live`; rebuilt from
                              live_orders by origin, incl. the order log with sign/post ms), live_loss_limit_usd (0 = off) and
@@ -110,6 +115,10 @@ backend/                     Python package (server, engines, analysis). Entry: 
                              both tokens (levels below min_price end a ladder, above max_price are skipped), top joins the best bid at queue share >= 0.4 else 2 ticks back, Binance
                              futures guard on every trade (no quotes while the guard feed is stale), net cap 300. Own
                              _requote (no price-model gate). Per-window logs -> data/bots/<id>/windows/ (see §5).
+                             value_guard (2026-11-02): a side quotes only while BidValueModel (config.BID_VALUE_MODEL,
+                             JSON trees, plain Python) predicts its best bid's 10 s value >= value_cut (cents);
+                             value_model picks another JSON next to it. sticky_ticks (paper / replay only, n_levels 1):
+                             a resting bid up to N ticks below the wanted price keeps its queue place.
                              Live (mode 'live', read at start; spec phase 2): the same decisions with the live
                              window's own inventory drive real post-only orders via its own Gateway (batch post /
                              cancel, fills from user-channel maker_orders by order id, ledger rebuilt from
@@ -142,23 +151,27 @@ backend/                     Python package (server, engines, analysis). Entry: 
     routes/traders.py        /api/traders*, /api/export
     routes/bots.py           /api/strategies, /api/bots*
     routes/trading.py        /api/trade/*, websocket /ws/trade
+    routes/profile.py        /api/profile* (our trading wallet = gateway.wallet; never reads .env.live)
 frontend/                    React 19 + TypeScript, bundled by esbuild-wasm into frontend/dist (served by FastAPI)
-  build.mjs                  build / --watch
-  index.html                 shell (build.mjs rewrites the script tag into dist/index.html)
-  src/main.tsx, App.tsx      router + top bar (nav, jobs popover, trading status chip)
-  src/styles.css             THE design system (tokens + every component class). Polymarket dark look
+  build.mjs                  build / --watch (copies public/ into dist/, adds ?v=<build> to the css/js links)
+  index.html                 shell (build.mjs rewrites the script tag into dist/index.html); PWA meta (apple-* tags, manifest)
+  public/                    served at the site root: manifest.json (standalone home-screen app) + PNG app icons
+  src/main.tsx, App.tsx      router + top bar (gem brand, pill nav, jobs popover, trading status chip) + bottom tab bar on phones (<=760px: Trade, Bots, Traders, Profile; the Jobs button shows in the top bar only while a job runs)
+  src/styles.css             THE design system (tokens + every component class). Opal-style dark look: black + iridescent aura, pill controls, white primary buttons, modals = bottom sheets on phones
   src/lib/api.ts             fetch JSON helpers (api.get/post/put/patch/del)
   src/lib/format.ts          money/pct/num/cents/clock/ago/... formatting
   src/lib/hooks.ts           usePoll(url, ms), useNow(ms), usePref(key) (localStorage UI prefs only)
   src/lib/feeds.ts           browser-direct market data: Chainlink/Coinbase/Kraken/Binance + CLOB books
   src/lib/tradeSocket.ts     the /ws/trade client (orders out, account events in, RTT)
-  src/components/ui.tsx      Card, Kpis, Strip, Tabs, Seg, Modal, toast, Table, Pill, Chip, Switch, ...
+  src/components/ui.tsx      Card, Kpis, Strip, Tabs, Seg, Modal, toast, Table, Pill, Chip, Switch, Ring (Opal progress ring: trade countdown, bots win rate), ...
   src/components/charts.tsx  LineChart (uPlot; `smooth` overlays movingAvg() of each series: bot + trader P/L charts),
                              Bars (SVG), histogram(), palette C
-  src/components/Sparkline.tsx  small SVG value line for cards (bot cards: portfolio over 7 days)
+  src/components/Sparkline.tsx  small SVG value line + fading area for cards (bot cards: portfolio over 7 days)
   src/pages/trade/           TradePage, PriceChart, OrderBook, OrderTicket, AccountPanel, WindowPositions (card under the chart), useTrade, positions (live P/L)
   src/pages/bots/            BotsPage (cards), BotPage (dashboard), BotSettings (config form)
   src/pages/traders/         TradersPage (compare), TraderPage (tabs), sections.tsx, LiveSection, dialogs
+  src/pages/profile/         ProfilePage: our Polymarket profile (pfp, bio, stats, rank, P/L chart + breakdown, positions,
+                             closed positions, activity with Load more)
 data/                        runtime data (gitignored) — see §5
 scripts/migrate_v1.py        one-time v1→v2 migration (already run 2026-10-21; kept for reference)
 scripts/import_btc5m.py      old logger PC's SQLite (data/import/btc5m/raw_db) -> recorder format for replay
@@ -167,8 +180,36 @@ scripts/geotest_order.py     one post-only $0.05 order + cancel: checks a server
 scripts/maker_latency_test.py  N post-only $0.05 orders + cancels: round trips and when each shows on / leaves the
                              market feed (= takes effect at the engine). Run on the server
 scripts/fast_value_live.py   server: create bot fast-value-live (fast-value's settings) / arm / disarm (mode live|paper)
+scripts/fast_london_live.py  server: bot fast-london: create / arm / disarm / signal binance_fut|classic (live switch)
+scripts/fast_source_replay.py  fast player replay per BTC feed (each alone / combined, queue + 50 ms models; --retime)
+scripts/source_leadlag.py    which BTC feed moves first as received (cross-correlation, spike events, Polymarket mid reaction)
 scripts/order_speed_probe.py server, REAL orders that cannot fill (5.37 sh at 0.02 on the next window, cancelled at
-                             once): post / cancel / in-flight-cancel timings on our clock and the book's -> data/probe/
+                             once): post / cancel / in-flight-cancel timings on our clock and the book's -> data/probe/;
+                             --site <s> also writes data/latency/orders-<s>-*.json for latency_build; --summarize
+                             <file> re-reads a saved run (no orders)
+scripts/imb_london_replay.py  Phase 3 of LONDON_PLAN: imb_maker configs x fill models (queue / pq pessimistic queue / tt
+                             trade-through) x latency on recordings re-timed to London; 2 h slices in parallel, mk1/mk10
+                             markouts; -spikeN / -emp cancel latency (fixed during guard spikes / drawn per cancel from the stress probe); FairGuard
+                             variants; --set ladder (13-level / Crouch-size ladders), --native (London recordings, no
+                             re-timing), --set sweep (-swNN / -vNN / -hi / -th / -td quote guards: imb_maker's value guard;
+                             -stN sticky quotes);
+                             per variant also pair% / pair cost / paired vs unpaired PnL
+                             -> data/replays/imb_london-*.json (places no orders)
+scripts/fair_calib.py        extract (per 5m window, samples at fixed seconds: strike = our Chainlink TWAP, futures +
+                             basis, TWAP seen so far, realized vol, Up mid, winner) / fit (TWAP random-walk P(Up) vs
+                             the market mid: log-loss, blend, value of disagreements) -> data/forensics/calib-<day>
+scripts/follow_scan.py       would following a studied trader pay: their 5m BUYs re-bought D = 1 / 5 / 10 s later at the
+                             mid + half a tick + taker fee, to settlement (on trader_forensics' fills files; read-only)
+scripts/endgame_scan.py      every 0.5 s of the last 40 s of each 5m window: causal Chainlink TWAP projection, z vs the
+                             strike, ask / depth of the projected winner -> data/forensics/endgame-<day>; report
+scripts/sweep_predict.py     extract (every 200 ms per token: best-bid level features + "level gone within 50..1000 ms"
+                             label + mid 1 s / 10 s later) -> data/forensics/sweep-<day>[-hh-hh].npz / fit (gradient
+                             boosting, AUC, cancel thresholds) -> data/forensics/sweep_model.pkl (needs sklearn) /
+                             export (a pickled regressor -> backend/bots/<name>.json); extract also labels `hit` (shares
+                             printed into the level) and reads tokens from the recording's info lines
+scripts/resting_probe.py     server, 3 REAL post-only bids that cannot fill (5 sh at 0.01-0.03, next window), status
+                             polled every 1 s, cancelled after 60 s: do resting orders survive (the 10-27 ~16 s
+                             account-wide cancels)? -> data/probe/resting-*.json
 scripts/delay_probe.py       server, REAL orders that cannot fill (0.02, active + next window): per request httpx
                              send / answer times, Poly-RateLimit headers, book appearance, and (--pcap, tcpdump on the
                              box) the answer's first packet on the wire; tests seq / burst / bot-like load / cancel in
@@ -177,16 +218,27 @@ scripts/check_imb_maker.py   offline check of imb_maker against docs/bots/bot_si
                              and of its live layer against a fake gateway (python -m scripts.check_imb_maker)
 scripts/check_stale_taker.py offline check of stale_taker's entry rules, latency draw and paper fill
 scripts/imb_maker_live.py    server: create bot imb-maker-live (dry run) / dry / arm / disarm
+scripts/imb_london_live.py   server: create bot imb-london [base|guard03|fair1|fair05|value0] (dry run, $10 bankroll, $8 live
+                             loss limit) / set <variant> / dry / arm / disarm; --bot <id> for another bot (LONDON_PLAN Phase 4)
+scripts/imb_london_status.py server: one status line of a live imb_maker bot + its twin from state.json (exit 3 = attention)
+scripts/trader_forensics.py  fetch (data-api: every BTC Up/Down fill of the 4 studied traders + ours, maker/taker) /
+                             extract (recordings: match time via the last_trade_price tx hash, book before/after, mids
+                             +1/5/10/30 s, Binance futures path -5..+2 s) / report / deep (taker reaction lag, maker
+                             fills by BTC move and by queue outcome) -> data/forensics/{api,fills}-<day>.jsonl.gz
+scripts/cancel_stress_probe.py server, REAL unfillable bids (0.01, active window): cancel latency calm vs at Binance
+                             spikes, off the book on the exchange clock -> data/probe/stress-*.json (used by the replay's
+                             -emp variants)
 scripts/late_fav_v2.py       server: create the late_fav lock-gate paper bots (v2, v2-ladder, v3, v3-safe, v3-big)
 scripts/late_fav_live.py     server: bot late-fav-v3-live (live_size 25, $50 budget, $20 loss limit): create / dry / arm / disarm
 scripts/latency_probe.py     live, no orders: network (DNS/TCP/TLS/keep-alive HTTP per venue) + feed ages/gaps/pings,
-                             one lean process per feed -> data/latency/probe-<site>-*.json (--site dublin|home)
+                             one lean process per feed -> data/latency/probe-<site>-*.json (--site dublin|home|london)
 scripts/latency_history.py   server: recordings + live_orders + imb window logs -> feed ages as the bots got them, maker
                              reprice after Binance moves, FAK/post-only/cancel/fill-notice timings -> data/latency/history-*.json
 scripts/latency_build.py     merges the newest probe/history files -> backend/bots/latency_profile.json + FAK model check
 scripts/feed_latency_test.py  standalone feed race (Binance/Coinbase/Chainlink: spike race, cross-correlation, TCP
                              connect, SNTP); places no orders. Output -> reports/latency_result.txt (Dublin, 10-23)
 deploy/install.sh            Linux server: install/update systemd services (server, recorder, one unit per bot)
+deploy/az_probe.sh           fresh EC2 box: venv + scripts/latency_probe.py labelled by AWS zone id (choosing an AZ)
 deploy/systemd/              pmtool-server, pmtool-recorder, pmtool-bot@<id> unit files
 docs/latency/README.md       the measured delays: method, every key, numbers, how a sim must use them
 docs/polymarket/             Polymarket rules/mechanics research (2026-10-27): README.md (index + ranked findings + our
@@ -256,7 +308,7 @@ WAL mode; every process/thread opens its own connection via `db.conn()`. Schema 
 |---|---|---|---|
 | `traders` | id | traders/store.py | tracked wallets: name, wallet, asset, window, coverage (JSON), notes, flags |
 | `trader_events` | id | traders/live.py | live-captured trades/redeems of watched traders (`data` = full event JSON) |
-| `bots` | id | bots/registry.py, control.py | strategy, mode (paper/live), config JSON, current `account` number, `archived` (time, else NULL: hidden from the Bots page and its totals, start refused, runner exits 0; column added to old DBs by `db.ADDED_COLUMNS`). Bots: `crouch-mm` (market_maker), `ml-copy` (ml_maker; `ml-join` (join_copy) deleted 2026-10-23), `crouch-v2` (crouch_v2), `fast-hold` / `fast-scalp` / `fast-value` and `fast-hold-v2` / `fast-scalp-v2` / `fast-value-v2` (fast_player), `late-fav` (late_fav), `late-fav-v2` / `late-fav-v2-ladder` / `late-fav-v3` / `late-fav-v3-safe` / `late-fav-v3-big` (late_fav gate "lock", paper, scripts/late_fav_v2.py), `imb-maker` / `imb-maker-300` (imb_maker; $5k B 60 / $300 B 5 cap 25; Dublin since 2026-10-25), `imb-maker-live` (imb_maker live, scripts/imb_maker_live.py; archived), `imb-maker-10` (imb_maker live, $10 measurement run, 2026-10-27), `stale-taker-1bps` / `stale-taker-2bps` (stale_taker, $1k paper, 10 sh; Dublin since 2026-10-26) (guard_maker bots `guard-mm-5m` / `guard-mm-15m` deleted from the server 2026-10-23) |
+| `bots` | id | bots/registry.py, control.py | strategy, mode (paper/live), config JSON, current `account` number, `archived` (time, else NULL: hidden from the Bots page and its totals, start refused, runner exits 0; column added to old DBs by `db.ADDED_COLUMNS`). Bots: `crouch-mm` (market_maker), `ml-copy` (ml_maker; `ml-join` (join_copy) deleted 2026-10-23), `crouch-v2` (crouch_v2), `fast-hold` / `fast-scalp` / `fast-value` and `fast-hold-v2` / `fast-scalp-v2` / `fast-value-v2` (fast_player), `late-fav` (late_fav), `late-fav-v2` / `late-fav-v2-ladder` / `late-fav-v3` / `late-fav-v3-safe` / `late-fav-v3-big` (late_fav gate "lock", paper, scripts/late_fav_v2.py), `imb-maker` / `imb-maker-300` (imb_maker; $5k B 60 / $300 B 5 cap 25; Dublin since 2026-10-25), `imb-maker-live` (imb_maker live, scripts/imb_maker_live.py; archived), `imb-maker-10` (imb_maker live, $10 measurement run, 2026-10-27), `imb-london` (imb_maker, guard_mode fair, scripts/imb_london_live.py; live 2026-11-01 12:24-12:53Z, paper since), `imb-london-live` (imb_maker LIVE on London 2026-11-01 18:37Z, stopped; since 2026-11-02 07:29Z variant value0 = value guard 0 c, always join, $7.10 lifetime live loss limit), `stale-taker-1bps` / `stale-taker-2bps` (stale_taker, $1k paper, 10 sh; Dublin since 2026-10-26) (guard_maker bots `guard-mm-5m` / `guard-mm-15m` deleted from the server 2026-10-23) |
 | `bot_fills` | id; (bot_id, account, ts) | bot process | every (paper) fill incl. maker/taker, rebate, markout. Sells (fast_player scalp) have negative `shares` and `usd` (= net cash received) |
 | `bot_windows` | (bot_id, account, slug) | bot process | per-window settlement record (`data` JSON), upserted until official |
 | `bot_equity` | (bot_id, account, ts) | bot process | portfolio value every 30 s (PnL chart) |
@@ -278,16 +330,28 @@ WAL mode; every process/thread opens its own connection via `db.conn()`. Schema 
 | `data/bots/<id>/windows/<UTC day>/<slug>.json.gz` | imb_maker: one JSON per window (orders, fills, guard triggers, decisions as `{cols, rows}`, + cfg, winner, shares) | written at settlement, ~80-150 KB each; days older than 30 pruned |
 | `data/cache/resolutions.json` | market slug → winner | shared by traders |
 | `data/cache/klines/<SYMBOL>/<day>.csv` | Binance 1 s closes per UTC day | shared by traders |
+| `data/forensics/api-<day>.jsonl.gz`, `fills-<day>.jsonl.gz` | studied traders' + our BTC fills (data-api) and their per-fill markouts from the recordings | scripts/trader_forensics.py |
+| `data/forensics/calib-<day>*`, `endgame-<day>*`, `sweep-<day>*.npz` | fair-value, endgame and sweep-predictor samples | scripts/fair_calib.py, endgame_scan.py, sweep_predict.py |
+| `backend/bots/bid_value_model.json` | the 10 s bid-value regressor as JSON trees (committed) | scripts/sweep_predict export / read by imb_maker's value guard |
+| `backend/bots/bid_value_hit.json`, `bid_value_thru.json`, `bid_value_thru_d4.json` | the same regressor trained on hit samples / on samples whose prints got through the queue ahead (Dublin + 11-01 / Dublin only); picked with imb_maker's `value_model` | scripts/sweep_predict export <pkl> <name> |
+| `data/forensics/sweep_model.pkl`, `hit_model.pkl`, `thru_model.pkl`, `thru_d4_model.pkl` | {"model": sweep classifier, "reg": 10 s bid-value regressor, "train": days}; the given-hit / through-queue regressors | sweep_predict fit / read by imb_london_replay -sw / -v variants |
 | `data/recordings/<YYYY-MM-DD>/<HH>.tsv.gz` | raw feeds, one line `recv_ms<TAB>source<TAB>message` (source cb = Coinbase ticker, or `matches` messages when Coinbase refused the ticker, bn, bf = Binance futures aggTrade (bookTicker 14:32-14:40Z on 10-22), kr, cl, act, info, bk:<slug>) | written by backend/recorder.py (~4 GB/day, 7 days kept; one gzip member per recorder start, closed on SIGTERM); read by bots/replay.py (`_gz_lines` also recovers hours where a killed recorder left a member unterminated) |
 | `data/recordings/recorder.log` | recorder output | |
-| `data/latency/probe-<site>-<utc>.json`, `history-<utc>.json` | raw latency measurements (summaries + 101 quantiles) | scripts/latency_probe.py / latency_history.py; merged by latency_build.py into backend/bots/latency_profile.json (committed) |
+| `data/latency/probe-<site>-<utc>.json`, `history-<utc>.json`, `orders-<site>-<utc>.json` | raw latency measurements (summaries + 101 quantiles); `aztest/` = the 11-01 London AZ comparison (not merged) | scripts/latency_probe.py / latency_history.py / order_speed_probe.py --site; merged by latency_build.py into backend/bots/latency_profile.json (committed) |
 | `data/import/btc5m/` | the old logger PC's export (2026-10-19..22, 64 h): `INVENTORY.md` (read first), `raw_db/btc5m.db` (all feeds, its paper bots, windows), `bot_dbs/` (its live bots), `code/` (old project + analysis, `analysis/data/*.pkl` need pandas >= 3), `extracts/` | read-only input |
 | `data/import/btc5m/recordings_{home,dublin}/` | that data converted to the recorder format by scripts/import_btc5m.py | replay with `--dir` |
 
-## 5b. Production server (Linux, AWS Dublin)
-Since 2026-10-22 the app also runs on an AWS EC2 server in Dublin (eu-west-1, Ubuntu 24.04, ~23 ms to
-Polymarket's London servers; the UK itself is close-only for the API). Code lives in `~/app` (same layout),
-deployed by copying the project without `.env*`, `*.pem`, `data/`, `archive/`. systemd runs
+## 5b. Production server (Linux, AWS London)
+Since 2026-11-01 the app runs on AWS EC2 in London: `pmtool-london` (i-02cd06aeb8754c488, eu-west-2c = zone id
+euw2-az1, c7i.xlarge, Ubuntu 24.04, 100 GB gp3 that survives termination, 4 GB swap), public IP 18.169.243.198
+(changes on stop/start; no Elastic IP), SSH `ssh -i dublin-key-aws.pem ubuntu@<ip>` (EC2 key pair `pmtool-key` =
+the same key), security group `pmtool-ssh` (port 22 from the user's home IP only). Polymarket whitelisted the wallet
+for eu-west-2 (co-location); `polymarket.com/api/geoblock` still says blocked (GB) for the IP. CLOB kept-alive HTTPS
+RTT ~14-16 ms (Dublin ~22), book feed age p50 ~5 ms (Dublin ~9); AZ test: `deploy/az_probe.sh`, results in
+`data/latency/probe-london-euw2-*`. The old Dublin server (eu-west-1, i-094f7c59e17b8b2c6, 2026-10-22..11-01) is
+being retired (no live orders from Dublin; stop it once London is verified). Code lives in `~/app` (same layout),
+deployed by copying the project without `.env*`, `*.pem`, `data/`, `archive/`. The recorder keeps 7 days and
+deletes older days sooner while the disk has < 10 GB free (`recorder.MIN_FREE_GB`). systemd runs
 `pmtool-server` (UI on 127.0.0.1:8000 only; open it through an SSH tunnel), `pmtool-recorder` and
 `pmtool-bot@<id>` (Nice −5, restarted on crash, a UI Stop stays stopped: the bot exits 0 within ~2 s because feed
 sockets close with `market_maker.WS_CLOSE_S`; if it hangs, `control.stop` sends SIGTERM, which systemd's
@@ -326,6 +390,7 @@ the home PC are separate.
 | `GET /api/trade/status`, `/markets`, `/account`, `/history`, `/price-to-beat/{slug}` | live account |
 | `POST /api/trade/arm`, `/order`, `/cancel-all`, `DELETE /api/trade/order/{id}` | trading (REST mirror) |
 | `POST /api/trade/setup-approvals` | send missing wallet approvals (on-chain, gasless) — UI button only |
+| `GET /api/profile`, `/api/profile/pnl?interval=1d\|1w\|1m\|all`, `/api/profile/positions?status=open\|closed&cursor=`, `/api/profile/activity?cursor=` | our Polymarket profile: identity + all-time stats/rank (+ gateway cash), P/L points + first/last breakdown, paged positions / activity |
 | `WS /ws/trade` | orders: `{op:"order"|"cancel"|"cancel_all"|"ping", cid, ...}` → `{type:"ack", cid, ok, result|error}`; pushes `hello, status, orders, order, trade, balances, positions` |
 
 ## 8. Live trading — latency design (`backend/trading/gateway.py`, `frontend/src/pages/trade/`)

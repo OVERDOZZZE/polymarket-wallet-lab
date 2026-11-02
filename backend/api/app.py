@@ -11,7 +11,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .routes import bots, system, trading, traders
+from .routes import bots, profile, system, trading, traders
 from .state import hub
 from ..config import FRONTEND_DIST
 from ..traders import store
@@ -37,7 +37,7 @@ async def lifespan(app):
 
 app = FastAPI(title="Polymarket Wallet Lab", default_response_class=FastJSON, lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=2000)
-for r in (system.router, traders.router, traders.export_router, bots.router, trading.router):
+for r in (system.router, traders.router, traders.export_router, bots.router, trading.router, profile.router):
     app.include_router(r)
 
 if (FRONTEND_DIST / "assets").exists():

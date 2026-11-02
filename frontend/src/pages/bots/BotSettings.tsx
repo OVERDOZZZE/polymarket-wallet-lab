@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Field, Modal, Switch, Tabs, toast } from "../../components/ui";
 import { api } from "../../lib/api";
 
-type Meta = { label: string; help?: string; group: string; step?: number };
+type Meta = { label: string; help?: string; group: string; step?: number; options?: [string, string][] };
 const META: Record<string, Meta> = {
   windows: { label: "Window lengths (min)", help: "Comma-separated, e.g. 5, 15", group: "Quoting" },
   levels: { label: "Levels per side", group: "Quoting", step: 1 },
@@ -53,6 +53,8 @@ const META: Record<string, Meta> = {
   copy_takers: { label: "Also copy their taker buys (bid 1 tick under the ask)", group: "Quoting" },
   refill_cooldown_s: { label: "Wait after a fill (s)", help: "Stops re-bidding a side instantly while the price runs through it.", group: "Risk", step: 1 },
   // fast player (fast_player)
+  signal_feeds: { label: "Spike signal feeds", help: "Binance futures only (fastest feed; replay 2026-11-02: best of the tested signals, few fills), or classic = the average of Coinbase, Kraken and Binance spot. Custom uses the two fields below. Applies to the running bot at once.", group: "Signal",
+    options: [["binance_fut", "Binance futures only"], ["classic", "Classic: Coinbase + Kraken + Binance spot"], ["custom", "Custom (exchanges + combine below)"]] },
   sources: { label: "Exchanges for the spike signal", help: "coinbase, kraken, binance. Each exchange's own move is used, so price gaps between venues never look like a spike.", group: "Signal" },
   spike_bps: { label: "Spike size (bps)", help: "BTC move within the lookback that counts as a spike.", group: "Signal", step: 0.5 },
   lookback_ms: { label: "Spike lookback (ms)", group: "Signal", step: 100 },
@@ -122,6 +124,13 @@ export function BotSettings({ bot, onClose }: { bot: any; onClose: () => void })
           const v = cfg[k], m = META[k] || { label: k, group: "Simulation" };
           if (typeof v === "boolean") {
             return <div key={k} className="row" style={{ gridColumn: "1 / -1" }}><Switch on={v} onChange={(x) => setCfg({ ...cfg, [k]: x })} /><div><div>{m.label}</div>{m.help && <div className="muted small">{m.help}</div>}</div></div>;
+          }
+          if (m.options) {
+            return <Field key={k} label={m.label} hint={m.help}>
+              <select className="input" value={v} onChange={(e) => setCfg({ ...cfg, [k]: e.target.value })}>
+                {m.options.map(([val, text]) => <option key={val} value={val}>{text}</option>)}
+              </select>
+            </Field>;
           }
           if (Array.isArray(v)) {
             return <Field key={k} label={m.label} hint={m.help}>

@@ -1,11 +1,12 @@
-// Tiny value-over-time line for cards: just the line, no axes or baseline. Green when the range ended above
+// Tiny value-over-time line for cards: just the line over a fading area, no axes or baseline. Green when the range ended above
 // where it started, red when below (gain/loss); hover shows the value and time at that point.
-import { useMemo, useRef, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import { C } from "./charts";
 import { money } from "../lib/format";
 
 export function Sparkline({ points, height = 56, label }: { points: [number, number][]; height?: number; label?: string }) {
   const ref = useRef<SVGSVGElement>(null);
+  const gid = "spk" + useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const [hover, setHover] = useState<number | null>(null);
   const W = 300, H = height, PAD = 4;
   const geo = useMemo(() => {
@@ -40,6 +41,12 @@ export function Sparkline({ points, height = 56, label }: { points: [number, num
       <svg ref={ref} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" width="100%" height={H}
            onMouseMove={move} onMouseLeave={() => setHover(null)} role="img"
            aria-label={`${label || "Value"}: ${money(geo.base, 2)} to ${money(geo.last, 2)}`}>
+        <defs>
+          <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor={color} stopOpacity={0.3} /><stop offset="1" stopColor={color} stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        <path d={`${geo.d}L${W},${H}L0,${H}Z`} fill={`url(#${gid})`} stroke="none" />
         <path d={geo.d} fill="none" stroke={color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
         {hp && <line x1={geo.x(hp[0])} x2={geo.x(hp[0])} y1={0} y2={H} stroke={C.text} strokeOpacity={0.3} vectorEffect="non-scaling-stroke" />}
       </svg>

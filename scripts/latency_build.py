@@ -5,6 +5,9 @@
   probe-<site>-*.json   (scripts/latency_probe.py; newest per site)  -> sites.<site>: net.*, feed.*, gap.*, ping.*
   history-*.json        (scripts/latency_history.py on the server)   -> sites.dublin: bot_feed.*, bot_gap.*;
                                                                         shared: order.*, market.*
+  orders-<site>-*.json  (scripts/order_speed_probe.py --site; newest)  -> sites.<site>: order.post_only.ack /
+                        .on_book, order.cancel.ack / .off_book (override the shared keys at that site)
+(data/latency/aztest/: the 2026-11-01 London AZ comparison; not read)
 It also checks the taker models against every real FAK order (history rows): for each model, the fill rate it
 predicts and how often it agrees with what the order really did; the result is stored under "validation" and
 the best model is what Latency.fak_match_ms implements. Keys and meaning: docs/latency/README.md.
@@ -243,6 +246,18 @@ def main():
             prof["validation"]["fak_models"].append(
                 {"model": f"calibrated hold {H:.0f} ms (order.fak.model, what Latency.fak_match_ms does)",
                  **{k: v for k, v in check_fak(f["rows"], sh, hold=H)[-1].items() if k != "model"}})
+    for site in sorted({"-".join(p.stem.split("-")[1:-2]) for p in LATENCY_DIR.glob("orders-*.json")}):
+        p = newest(f"orders-{site}-*.json")                  # scripts/order_speed_probe.py --site: overrides shared
+        o = json.loads(p.read_text())
+        note = (f"order_speed_probe {p.stem[-15:]} at {site}: {o['accepted']} unfillable post-only orders on a "
+                "not-yet-open window, calm book (the shared .ack keys come from live bots and include busy moments)")
+        d = prof["sites"].setdefault(site, {})
+        for lab, key in (("post_ack", "order.post_only.ack"), ("cancel_ack", "order.cancel.ack"),
+                         ("on_book", "order.post_only.on_book"), ("off_book", "order.cancel.off_book")):
+            x = dist(o.get(lab), note=note)
+            if x:
+                d[key] = x
+        prof["sources"][f"orders.{site}"] = {"file": p.name, "orders": o["orders"], "accepted": o["accepted"]}
     LATENCY_PROFILE.write_text(json.dumps(prof, indent=1))
     print(f"wrote {LATENCY_PROFILE} ({LATENCY_PROFILE.stat().st_size / 1024:.0f} KB): "
           f"{ {s: len(v) for s, v in prof['sites'].items()} } site keys, {len(prof['shared'])} shared")

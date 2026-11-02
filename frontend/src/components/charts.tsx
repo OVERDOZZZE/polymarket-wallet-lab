@@ -6,8 +6,20 @@ import "uplot/dist/uPlot.min.css";
 
 export const C = {
   s1: "#3987e5", s2: "#d95926", s3: "#199e70", s4: "#c98500", s5: "#d55181", s7: "#9085e9",
-  up: "#3db468", down: "#e5484d", pnl: "#8b6cf6", muted: "#8c8b85", grid: "rgba(255,255,255,0.06)",
-  axis: "#8c8b85", text: "#ecebe8", avg: "rgba(236,235,232,0.85)",
+  up: "#30d158", down: "#ff453a", pnl: "#9b7bff", muted: "#8e8e93", grid: "rgba(255,255,255,0.05)",
+  axis: "#8e8e93", text: "#f5f5f7", avg: "rgba(245,245,247,0.85)",
+};
+
+const rgba = (hex: string, a: number) => {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
+};
+/** Area fill that fades from the line colour to nothing at the bottom of the plot. */
+const fadeFill = (hex: string) => (u: uPlot) => {
+  const g = u.ctx.createLinearGradient(0, u.bbox.top, 0, u.bbox.top + u.bbox.height);
+  g.addColorStop(0, rgba(hex, 0.34));
+  g.addColorStop(1, rgba(hex, 0));
+  return g;
 };
 
 /** Centred moving average over a time window of `frac` x the x span (uneven x spacing is fine; nulls skipped). */
@@ -25,7 +37,7 @@ export function movingAvg(x: ArrayLike<number>, y: ArrayLike<number | null>, fra
 }
 
 export type LSeries = {
-  label: string; color: string; width?: number; fill?: string; points?: boolean; pointSize?: number;
+  label: string; color: string; width?: number; fill?: string; gradient?: boolean; points?: boolean; pointSize?: number;
   dash?: number[]; step?: boolean; show?: boolean; fmt?: (v: number) => string;
 };
 
@@ -140,10 +152,10 @@ export function LineChart(p: Props) {
       series: [
         {},
         ...series.map((s) => ({
-          label: s.label, stroke: s.color, width: s.width ?? 2, fill: s.fill, show: s.show !== false, dash: s.dash,
+          label: s.label, stroke: s.color, width: s.width ?? 2, fill: s.gradient ? fadeFill(s.color) : s.fill, show: s.show !== false, dash: s.dash,
           spanGaps: true,
           paths: s.points ? () => null : s.step ? uPlot.paths.stepped!({ align: 1 }) : undefined,
-          points: s.points ? { show: true, size: s.pointSize ?? 9, fill: s.color, stroke: "#1e1f23", width: 1.5 } : { show: false },
+          points: s.points ? { show: true, size: s.pointSize ?? 9, fill: s.color, stroke: "#111114", width: 1.5 } : { show: false },
         })),
       ],
       plugins: [tooltip(series, xFmt), hlinePlugin(() => [...hl.current, ...(p.zero ? [{ y: 0, color: "rgba(140,139,133,.5)" }] : [])])],
@@ -218,7 +230,7 @@ export function Bars({ labels, values, height = 240, fmt = (v) => v.toLocaleStri
           return (
             <g key={i} onMouseEnter={() => setHover(i)}>
               <rect x={padL + i * bw} y={padT} width={bw} height={ih} fill="transparent" />
-              <rect x={x} y={Math.min(y0, y1)} width={Math.max(1, bw - Math.min(4, bw * 0.2))} height={h} rx={Math.min(4, bw / 4)}
+              <rect x={x} y={Math.min(y0, y1)} width={Math.max(1, bw - Math.min(4, bw * 0.2))} height={h} rx={Math.min(6, bw / 3)}
                     fill={col(v, i)} opacity={hover === null || hover === i ? 1 : 0.55} />
               {i % every === 0 && <text x={padL + i * bw + bw / 2} y={height - padB + 16} textAnchor="middle">{labels[i]}</text>}
             </g>

@@ -1,5 +1,5 @@
 // Shared UI primitives. Pages compose these; styling lives in styles.css.
-import { CSSProperties, ReactNode, useEffect, useMemo, useState } from "react";
+import { CSSProperties, ReactNode, useEffect, useId, useMemo, useState } from "react";
 
 export function Card({ title, right, children, className = "", style }: {
   title?: ReactNode; right?: ReactNode; children: ReactNode; className?: string; style?: CSSProperties;
@@ -101,6 +101,30 @@ export const Alert = ({ kind = "info", children }: { kind?: "info" | "err" | "wa
 export const Progress = ({ frac }: { frac: number }) => (
   <div className="progress"><span style={{ width: `${Math.round(frac * 100)}%` }} /></div>
 );
+
+/** Circular progress (Opal's focus ring): opal gradient arc unless `color` is given; children sit in the middle. */
+export function Ring({ frac, size = 88, stroke = 8, color, children }: {
+  frac: number; size?: number; stroke?: number; color?: string; children?: ReactNode;
+}) {
+  const id = "ring" + useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  const r = (size - stroke) / 2, c = 2 * Math.PI * r, f = Math.min(1, Math.max(0, frac || 0));
+  return (
+    <div className="ring" style={{ width: size, height: size }}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden>
+        <defs>
+          <linearGradient id={id} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stopColor="#5ee7ff" /><stop offset=".5" stopColor="#7b6cff" /><stop offset="1" stopColor="#ff6ad5" />
+          </linearGradient>
+        </defs>
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(255,255,255,.08)" strokeWidth={stroke} />
+        <circle className="arc" cx={size / 2} cy={size / 2} r={r} fill="none" strokeWidth={stroke} strokeLinecap="round"
+                strokeDasharray={c} strokeDashoffset={c * (1 - f)} transform={`rotate(-90 ${size / 2} ${size / 2})`}
+                style={{ stroke: color || `url(#${id})` }} />
+      </svg>
+      <div className="ring-in">{children}</div>
+    </div>
+  );
+}
 
 export type Kpi = { label: string; value: ReactNode; sub?: ReactNode; tone?: string; help?: string };
 export const Kpis = ({ items }: { items: Kpi[] }) => (

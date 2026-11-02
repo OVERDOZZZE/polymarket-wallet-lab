@@ -1,6 +1,6 @@
 // Trade: manual live trading on BTC 5m/15m Up/Down windows, Polymarket layout, lowest-latency data.
 import { useMemo, useState } from "react";
-import { Card, Seg } from "../../components/ui";
+import { Card, Ring, Seg } from "../../components/ui";
 import { FEEDS, FeedId, TWAP_END_LAG, TWAP_S, bookLat, clLastSec, feeds, projectedTwap, twapAt } from "../../lib/feeds";
 import { clock, hm, money, num } from "../../lib/format";
 import { useMedia, useNow, usePref } from "../../lib/hooks";
@@ -46,6 +46,7 @@ export default function TradePage() {
   const proj = m && now >= m.end_ts - TWAP_S - 15 && now < m.end_ts ? projectedTwap(m.end_ts, spot) : null;
   const projD = proj !== null && strike.value !== null ? proj - strike.value : null;
   const left = m ? (now < m.start ? m.start - now : m.end_ts - now) : 0;
+  const open = !!m && now >= m.start, hot = open && left < 30;
   const myPrices = useMemo(() => new Set(acct.orders.filter((o) => m && o.asset_id === m.tokens[outcome]).map((o) => Math.round(Number(o.price) * 1000) / 1000)), [acct.orders, m, outcome]);
   const st = acct.status;
 
@@ -74,7 +75,13 @@ export default function TradePage() {
                 </div>
               </div>
               <span className="spacer" />
-              <div className="right"><div className="l">{m && now < m.start ? "Opens in" : "Time left"}</div><div className={`countdown${m && now >= m.start && left < 30 ? " hot" : ""}`}>{clock(left)}</div></div>
+              <div className="cd">
+                <Ring frac={!m ? 0 : open ? left / (m.end_ts - m.start) : 1} size={phone ? 80 : 100} stroke={phone ? 7 : 8}
+                      color={!open ? "var(--surface-4)" : hot ? "var(--down)" : undefined}>
+                  <div className={`countdown${hot ? " hot" : ""}`}>{clock(left)}</div>
+                  <div className="cd-l">{m && !open ? "opens in" : "left"}</div>
+                </Ring>
+              </div>
             </div>
             <div className="row wrap" style={{ marginBottom: 8, gap: 8 }}>
               {FEEDS.map((f) => {
@@ -102,7 +109,7 @@ export default function TradePage() {
 
           <div className="grid2">
             <div className="card flush">
-              <div className="row" style={{ padding: "12px 14px 4px" }}>
+              <div className="row" style={{ padding: "16px 18px 8px" }}>
                 <div className="card-title" style={{ margin: 0 }}>Order book</div>
                 <span className="spacer" />
                 <Seg value={outcome} options={["up", "down"] as const} onChange={setOutcome} format={(v) => (v === "up" ? "Up" : "Down")} />

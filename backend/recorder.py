@@ -13,7 +13,7 @@ offline through the same PaperBot engine (backend/bots/replay.py) instead of wai
 Files: data/recordings/<YYYY-MM-DD>/<HH>.tsv.gz (UTC hour), one line per message:
     <recv_ms>\t<source>\t<raw message>
 source = cb | bn | bf | kr | cl | act | info | bk:<slug>. Gzip members are flushed every few seconds, so a file being
-written is readable. Old days are deleted after KEEP_DAYS.
+written is readable. Old days are deleted after KEEP_DAYS, or sooner while the disk has < MIN_FREE_GB free.
 """
 import asyncio
 import gzip
@@ -32,6 +32,7 @@ from .config import BINANCE_FUT_WS, BINANCE_WS, CLOB_MARKET_WS, COINBASE_WS, GAM
 
 PREOPEN_S = 30
 KEEP_DAYS = 7
+MIN_FREE_GB = 10        # also delete the oldest days while the disk has less free space than this
 WINDOWS = (5, 15)
 HTTP = requests.Session()
 HTTP.headers["User-Agent"] = "Mozilla/5.0 (pmtool recorder)"
@@ -88,6 +89,10 @@ class Writer(threading.Thread):
         days = sorted(p for p in RECORDINGS_DIR.iterdir() if p.is_dir())
         for p in days[:-KEEP_DAYS]:
             shutil.rmtree(p, ignore_errors=True)
+        days = days[-KEEP_DAYS:]
+        while len(days) > 1 and shutil.disk_usage(RECORDINGS_DIR).free < MIN_FREE_GB * 1e9:   # never today's
+            print(f"{time.strftime('%H:%M:%S')} disk below {MIN_FREE_GB} GB free: deleting {days[0].name}", flush=True)
+            shutil.rmtree(days.pop(0), ignore_errors=True)
 
 
 W = Writer()

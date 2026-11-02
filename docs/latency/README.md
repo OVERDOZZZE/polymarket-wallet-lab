@@ -187,7 +187,33 @@ almost always gone.
   * For FAKs, "asks vanished" is the first moment the recorded best ask on the order's side was above its limit.
   * Fill notices: our user-channel receipt minus the public print of the same trade. That print is on our token
     at our price, or on the other token at 1 − price for the cross-token fills that are most maker fills.
-* **`scripts/latency_build.py`** merges the newest probe per site and the newest history file into the profile,
-  and re-runs the FAK model check.
+* **`scripts/latency_build.py`** merges the newest probe per site, the newest history file and the newest
+  `orders-<site>-*.json` per site into the profile, and re-runs the FAK model check.
+
+## London site (2026-11-01, `Latency("london")`)
+
+The bots moved to AWS London (eu-west-2c, whitelisted co-location). Site `london` has `feed.*`, `net.*`, `gap.*`,
+`ping.*` from a 15-min `latency_probe --site london`, and its own order keys from `order_speed_probe 20 --site
+london` (41 unfillable post-only orders on a window that had not opened, calm book): these override the shared
+Dublin order keys at this site. It has **no `bot_feed.*` yet**: run `scripts/latency_history.py` on the London
+recordings after a day or more, then rebuild.
+
+| Key (p50 / p90 ms) | London | Dublin |
+|---|---|---|
+| `order.post_only.ack` (sent → answer) | 39 / 48 | 65 / 177 |
+| `order.cancel.ack` (sent → answer) | 30 / 33 | 61 / 156 |
+| `order.post_only.on_book` (sent → on the book, exchange clock) | 27 / 34 | - |
+| `order.cancel.off_book` (sent → off the book, exchange clock) | 20 / 23 | - |
+| `feed.polymarket_book` | 4 | 12 |
+| `feed.kraken` / `feed.coinbase` | 13 / 42 | 34 / 49 |
+| `feed.binance_fut_trade` | 127 | 106 (Binance is ~20 ms farther from London) |
+| `net.polymarket_clob.http` (kept-alive round trip) | 17 | 24 |
+
+* London's order numbers are calm-book numbers. Dublin's come from live bots and include the busy moments when
+  cancels slowed (p50 112 ms on the fills that mattered, `docs/bots/imb_maker/LIVE_POSTMORTEM_2026-10-27.md`).
+  How much of that congestion London avoids is still unmeasured.
+* A cancel sent right behind its post usually wins: 19 of 20 pipelined posts were refused as "already canceled".
+* Per connection the CLOB round trip ranges 14-18.5 ms (backend behind Cloudflare), more than the AZ differences;
+  opening several connections and keeping the fastest may save 2-4 ms.
 
 Re-measure after any change of server, region, client library or order path, and at least monthly.

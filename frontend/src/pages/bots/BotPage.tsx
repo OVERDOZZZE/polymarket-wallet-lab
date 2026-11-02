@@ -203,7 +203,7 @@ function PnlCard({ s, points }: { s: any; points: [number, number][] }) {
       <div className={`big-value ${tone(change)}`}>{signed(change)}</div>
       <div className="muted small" style={{ marginBottom: 8 }}>{RANGE_SUB[rng]}</div>
       <LineChart x={x} ys={[y]} time height={210} zero legend={false} smooth
-                 series={[{ label: "P/L", color: C.pnl, width: 2.5, fill: "rgba(139,108,246,0.14)", fmt: (v) => signed(v) }]}
+                 series={[{ label: "P/L", color: C.pnl, width: 2.5, gradient: true, fmt: (v) => signed(v) }]}
                  yFmt={(v) => "$" + v.toFixed(0)} />
     </div>
   );
@@ -283,7 +283,7 @@ function LivePnlCard({ L }: { L: any }) {
       <div className={`big-value ${tone(change)}`}>{signed(change)}</div>
       <div className="muted small" style={{ marginBottom: 8 }}>{RANGE_SUB[rng]}{L.at_risk > 0 ? ` · ${money(L.at_risk, 2)} in open windows` : ""}</div>
       <LineChart x={x} ys={[y]} time height={210} zero legend={false} smooth
-                 series={[{ label: "Live P/L", color: C.pnl, width: 2.5, fill: "rgba(139,108,246,0.14)", fmt: (v) => signed(v) }]}
+                 series={[{ label: "Live P/L", color: C.pnl, width: 2.5, gradient: true, fmt: (v) => signed(v) }]}
                  yFmt={(v) => "$" + v.toFixed(0)} />
     </div>
   );
@@ -384,7 +384,7 @@ function MakerLiveAccount({ L }: { L: any }) {
       {(L.gw_errors || []).length > 0 && <p className="hint dn">{L.gw_errors.map((e: any) => `${hm(e[0])} ${e[1]}`).join(" · ")}</p>}
       {rej.length > 0 && <p className="hint">Refused orders: {rej.map(([k, v]) => `${k.replace(/_/g, " ")} ${v}`).join(" · ")} (post-only orders that would have crossed the book are expected now and then).</p>}
       <div className="card flush">
-        <div className="t2" style={{ padding: "10px 14px" }}>Live windows</div>
+        <div className="card-title" style={{ padding: "16px 20px 2px" }}>Live windows</div>
         {!(L.windows || []).length ? <Empty title="No live fills yet">A window appears here with its first real fill.</Empty> : (
           <Table rows={L.windows} cols={[
             { key: "m", label: "Market", align: "l", render: (w: any) => mktCell(w.win, w.start, w.end) },
@@ -400,7 +400,7 @@ function MakerLiveAccount({ L }: { L: any }) {
         )}
       </div>
       <div className="card flush">
-        <div className="t2" style={{ padding: "10px 14px" }}>Resting live orders</div>
+        <div className="card-title" style={{ padding: "16px 20px 2px" }}>Resting live orders</div>
         {!(L.orders || []).length ? <Empty title="No live orders resting">The bot quotes from 5 s after a window opens until 25 s before it closes.</Empty> : (
           <Table rows={L.orders} cols={[
             { key: "m", label: "Market", align: "l", render: (o: any) => { const st = Number(o.slug.split("-").pop()); return mktCell(o.win, st, st + o.win * 60); } },
@@ -412,7 +412,7 @@ function MakerLiveAccount({ L }: { L: any }) {
         )}
       </div>
       <div className="card flush">
-        <div className="t2" style={{ padding: "10px 14px" }}>Fills and refusals</div>
+        <div className="card-title" style={{ padding: "16px 20px 2px" }}>Fills and refusals</div>
         {!log.length ? <Empty title="Nothing yet" /> : (
           <Table rows={log} cols={[
             { key: "ts", label: "When", align: "l", render: (r: any) => <span className="muted">{ago(r.ts, now)}</span> },
@@ -441,7 +441,7 @@ function LiveAccount({ L }: { L: any }) {
       {(L.gw_errors || []).length > 0 && <p className="hint dn">{L.gw_errors.map((e: any) => `${hm(e[0])} ${e[1]}`).join(" · ")}</p>}
       {L.gw_reconnects > 0 && <p className="hint">CLOB connection recycled by Polymarket {L.gw_reconnects}× (every 10,000 requests); reconnected at once each time.</p>}
       <div className="card flush">
-        <div className="t2" style={{ padding: "10px 14px" }}>Live orders</div>
+        <div className="card-title" style={{ padding: "16px 20px 2px" }}>Live orders</div>
         {!log.length ? <Empty title="No live orders yet">Each paper entry also sends a real order ({L.size ?? `paper $ × ${L.scale}`}).</Empty> : (
           <Table rows={log} cols={[
             { key: "ts", label: "When", align: "l", render: (r: any) => <span className="muted">{ago(r.ts, now)}</span> },
@@ -455,7 +455,7 @@ function LiveAccount({ L }: { L: any }) {
         )}
       </div>
       <div className="card flush">
-        <div className="t2" style={{ padding: "10px 14px" }}>Live windows</div>
+        <div className="card-title" style={{ padding: "16px 20px 2px" }}>Live windows</div>
         {!(L.windows || []).length ? <Empty title="No live windows yet" /> : (
           <Table rows={L.windows} cols={[
             { key: "m", label: "Market", align: "l", render: (w: any) => mktCell(w.win, w.start, w.end) },
@@ -465,7 +465,7 @@ function LiveAccount({ L }: { L: any }) {
             { key: "pnl", label: "PnL", render: (w: any) => w.pnl === null ? "–" : <span className={tone(w.pnl)}>{signed(w.pnl)}</span> },
           ]} />
         )}
-        <p className="hint" style={{ padding: "8px 14px" }}>Shares are after the taker fee (taken in shares, as in paper). Winning shares may need redeeming on Polymarket before the USDC is back in the wallet.</p>
+        <p className="hint" style={{ padding: "10px 20px 14px", margin: 0 }}>Shares are after the taker fee (taken in shares, as in paper). Winning shares may need redeeming on Polymarket before the USDC is back in the wallet.</p>
       </div>
     </div>
   );
@@ -490,7 +490,7 @@ function Positions({ s }: { s: any }) {
         { key: "value", label: "Value", render: (p: any) => money(p.value, 2) },
         { key: "pl", label: "P/L", sort: (p: any) => (p.value ?? p.cost) - p.cost, render: (p: any) => p.value === null ? "–" : <span className={tone(p.value - p.cost)}>{signed(p.value - p.cost)}</span> },
       ]} footer={<tfoot><tr><td>Total</td><td /><td /><td /><td>{money(tc, 2)}</td><td>{money(tv, 2)}</td><td className={tone(tv - tc)}>{signed(tv - tc)}</td></tr></tfoot>} />
-      <p className="hint" style={{ padding: "8px 14px" }}>Value uses the order book mid. Each winning share pays $1 when the window settles.{s.cfg?.exit_mode === "scalp" ? " This bot sells its shares back into the bid once the book has repriced." : " The bot never sells."}</p>
+      <p className="hint" style={{ padding: "10px 20px 14px", margin: 0 }}>Value uses the order book mid. Each winning share pays $1 when the window settles.{s.cfg?.exit_mode === "scalp" ? " This bot sells its shares back into the bid once the book has repriced." : " The bot never sells."}</p>
     </div>
   );
 }

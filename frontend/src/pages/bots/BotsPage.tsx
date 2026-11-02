@@ -2,7 +2,7 @@
 import { MouseEvent, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Sparkline } from "../../components/Sparkline";
-import { Empty, Field, LiveBadge, Modal, Table, toast } from "../../components/ui";
+import { Empty, Field, LiveBadge, Modal, Ring, Table, toast } from "../../components/ui";
 import { api } from "../../lib/api";
 import { dtUTC, money, pct, signed, tone } from "../../lib/format";
 import { usePoll, usePref } from "../../lib/hooks";
@@ -27,12 +27,15 @@ export default function BotsPage() {
       {data && !data.length && <Empty title="No bots yet">Create one from a strategy. It starts on paper with live Polymarket data.</Empty>}
       <div className="grid3">
         {active.map((b) => (
-          <div key={b.id} className="card" style={{ cursor: "pointer" }} onClick={() => nav(`/bots/${b.id}`)}>
-            <div className="pm-prof" style={{ marginBottom: 10 }}>
+          <div key={b.id} className="card bot-card" onClick={() => nav(`/bots/${b.id}`)}>
+            <div className="pm-prof bot-card-head">
               <div className={`pm-ava ${b.live ? "live" : "b"}`} style={{ width: 46, height: 46 }} />
               <div>
-                <div className="pm-name" style={{ fontSize: "1.1rem" }}>{b.name}<LiveBadge on={b.running} /></div>
-                <div className="pm-meta">{b.strategy_label} · {b.live ? (b.live.dry ? <b className="warn">DRY RUN</b> : <b className="dn">REAL MONEY{b.live.halted ? " · halted" : b.live.paused ? " · paused" : ""}</b>) : b.mode} · account #{b.account}</div>
+                <div className="pm-name">{b.name}</div>
+                <div className="bot-card-sub">
+                  <LiveBadge on={b.running} />
+                  <span className="pm-meta">{b.strategy_label} · {b.live ? (b.live.dry ? <b className="warn">DRY RUN</b> : <b className="dn">REAL MONEY{b.live.halted ? " · halted" : b.live.paused ? " · paused" : ""}</b>) : b.mode} · account #{b.account}</span>
+                </div>
               </div>
             </div>
             <div className="bot-card-body">
@@ -132,9 +135,13 @@ function BotTotals({ bots }: { bots: any[] }) {
       </div>
       <div className="bt-card" style={{ "--i": 2 } as any}>
         <div className="bt-l">Windows traded</div>
-        <CountUp className="bt-v" value={sum("windows")} fmt={int} />
-        <Meter parts={[{ v: won, c: "var(--up)" }, { v: done - won, c: "var(--surface-3)" }]} />
-        <div className="bt-s">{winRate == null ? "none settled yet" : `${pct(winRate, 0)} won · ${int(done)} settled`}</div>
+        <div className="bt-ring-row">
+          <Ring frac={winRate ?? 0} size={60} stroke={6}><span className="ring-pct">{winRate == null ? "–" : pct(winRate, 0)}</span></Ring>
+          <div>
+            <CountUp className="bt-v" value={sum("windows")} fmt={int} />
+            <div className="bt-s">{winRate == null ? "none settled yet" : `won · ${int(done)} settled`}</div>
+          </div>
+        </div>
       </div>
       <div className="bt-card" style={{ "--i": 3 } as any}>
         <div className="bt-l">Trades (fills)</div>

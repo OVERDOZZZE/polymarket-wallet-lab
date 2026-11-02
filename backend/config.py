@@ -26,6 +26,7 @@ RECORDINGS_DIR = DATA_DIR / "recordings"       # recordings/<day>/<HH>.tsv.gz ra
 IMPORT_DIR = DATA_DIR / "import"               # data from other machines; btc5m/ = the old logger PC (scripts/import_btc5m.py)
 LATENCY_DIR = DATA_DIR / "latency"             # raw latency measurements (scripts/latency_probe.py, latency_history.py)
 LATENCY_PROFILE = ROOT / "backend" / "bots" / "latency_profile.json"   # measured delays for simulations (bots/latency.py)
+BID_VALUE_MODEL = ROOT / "backend" / "bots" / "bid_value_model.json"   # imb_maker value guard (scripts/sweep_predict export)
 FRONTEND_DIST = ROOT / "frontend" / "dist"
 
 HOST = ENV.get("HOST", "127.0.0.1")

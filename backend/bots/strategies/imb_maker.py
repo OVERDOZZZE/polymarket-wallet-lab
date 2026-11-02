@@ -88,14 +88,17 @@ import shutil
 import threading
 import time
 from collections import deque
+from statistics import NormalDist
 
 import orjson
 
 from ... import db
+from ...config import BID_VALUE_MODEL
 from ...util import replace_retry
 from .guard_maker import GuardMakerBot, GuardMakerConfig
 from .market_maker import PaperBot, _pct
 
+_NORM = NormalDist()
 TICK = 10                 # 1 c in thousandths
 LOG_KEEP_DAYS = 30
 BATCH = 15                # orders per POST /orders (Polymarket's limit)
@@ -140,6 +143,15 @@ class ImbMakerConfig(GuardMakerConfig):
     lookback_ms: float = 1000.0
     pull_ms: float = 1000.0
     feed_stale_ms: float = 10000.0       # no quotes once the guard feed is this silent (quiet Sundays: gaps > 3 s)
+    guard_mode: str = "bps"              # "bps": move >= spike_bps; "fair": Up fair-value move >= fair_thr (FairGuard)
+    fair_thr: float = 0.01
+    # value guard (LONDON_PLAN 11-02): a side quotes only while the predicted 10 s value of its best bid (token mid
+    # 10 s later - bid, cents; scripts/sweep_predict's regressor, config.BID_VALUE_MODEL) is at least value_cut
+    value_guard: bool = False
+    value_cut: float = 0.0
+    value_model: str = ""                # another model file next to BID_VALUE_MODEL ("" = BID_VALUE_MODEL)
+    sticky_ticks: int = 0                # paper / replay only, n_levels 1: a resting bid up to this many ticks below the
+                                         # wanted price stays where it is (keeps its queue place) instead of re-joining
     # simulation (Dublin)
     latency_ms: float = 35.0
     cancel_latency_ms: float = 35.0
@@ -156,6 +168,7 @@ class ImbMakerConfig(GuardMakerConfig):
                                          # clock, stop cancels still go at once); its side places nothing new meanwhile
     live_max_inflight: int = 0           # posts awaiting their answer, at most (0 = no limit); cancels never wait
     live_stall_ms: float = 0.0           # no new posts while the market's feed is silent / a post waits this long (0 = off)
+    live_heartbeat_s: float = 5.0        # Polymarket order heartbeat period (0 = off): orders die if the bot does
 
 
 # ---------------------------------------------------------------- decision code (port of strategy.py)
@@ -189,6 +202,76 @@ class BinanceGuard:
 
     def allowed(self, t):
         return t >= self.until[1], t >= self.until[-1]
+
+
+class FairGuard(BinanceGuard):
+    """guard_mode "fair" (2026-11-01, docs/bots/imb_maker/LONDON_PLAN.md): fires when the move over win_ms, scaled by
+    the active window's option sensitivity, moves the Up fair value by >= thr (probability units). Sensitivity =
+    pdf(inv_cdf(Up mid)) / (realized 1 s vol in bps x sqrt(seconds left)), from `scale(t)` = the first factor over the
+    root; no strike needed. Near the strike late in the window a 0.2 bps move counts, early on 1 bps may not."""
+
+    def __init__(self, bps, win_ms, cool_ms, thr, scale):
+        super().__init__(bps, win_ms, cool_ms)
+        self.thr, self.scale = thr, scale
+        self.sec, self.rets = {}, deque()       # last price per second; (second, 1 s log return in bps), 300 s
+
+    def vol(self):
+        xs = [r for _, r in self.rets]
+        return max(0.3, math.sqrt(sum(x * x for x in xs) / len(xs))) if len(xs) > 30 else 0.6
+
+    def on_tick(self, t, price):
+        s = int(t // 1000)
+        if s not in self.sec:
+            if s - 1 in self.sec:
+                self.rets.append((s, math.log(price / self.sec[s - 1]) * 1e4))
+            self.sec = {k: v for k, v in self.sec.items() if k >= s - 2}
+            while self.rets and self.rets[0][0] < s - 300:
+                self.rets.popleft()
+        self.sec[s] = price
+        self.ticks.append((t, price))
+        while len(self.ticks) >= 2 and self.ticks[1][0] <= t - self.win_ms:
+            self.ticks.popleft()
+        t0, p0 = self.ticks[0]
+        if t0 > t - self.win_ms:
+            return 0
+        k = self.scale(t)
+        r = (price / p0 - 1) * 1e4
+        if k is None or abs(r * k / self.vol()) < self.thr:
+            return 0
+        side = 1 if r < 0 else -1
+        self.until[side] = max(self.until[side], t + self.cool_ms)
+        return side
+
+
+class BidValueModel:
+    """scripts/sweep_predict's 10 s bid-value regressor, exported to JSON trees (plain Python, no sklearn):
+    predict(x) = base + the leaf values of all trees for the feature list x (sweep_predict.FEATS order)."""
+    _all = {}
+
+    def __init__(self, path):
+        d = orjson.loads(open(path, "rb").read())
+        self.base = d["base"]
+        self.trees = [[tuple(n) for n in t] for t in d["trees"]]
+
+    @classmethod
+    def get(cls, name=""):
+        m = cls._all.get(name)
+        if m is None:
+            m = cls._all[name] = cls(BID_VALUE_MODEL.parent / name if name else BID_VALUE_MODEL)
+        return m
+
+    def predict(self, x):
+        s = self.base
+        for t in self.trees:
+            n = t[0]
+            while not n[5]:
+                v = x[n[0]]
+                n = t[n[2] if (v <= n[1] if v == v else n[4]) else n[3]]
+            s += n[6]
+        return s
+
+
+_BV_CACHE = {}                 # (model, slug, side, 100 ms) -> predicted value; market data only (shared by replay variants)
 
 
 def top_depths(c, size_bb, size_ba, age_bb_s, age_ba_s):
@@ -296,6 +379,13 @@ class ImbMakerBot(GuardMakerBot):
         self.lstat = collections.Counter()
         self.lpost_ms, self.lcancel_ms = deque(maxlen=2000), deque(maxlen=2000)
         self.fo = None                                # FastOrders (live + live_fast)
+        # value guard inputs (sweep_predict.extract's features, on receipt time)
+        self._bv_hist = collections.defaultdict(deque)   # (slug, side) -> (ms, best bid, size at it), 2.5 s
+        self._bv_since = {}                              # (slug, side) -> (best bid, since ms)
+        self._bv_tr = collections.defaultdict(deque)     # (slug, side) -> (ms, print size), 2 s
+        self._bv_msgs = collections.defaultdict(deque)   # slug -> book message ms, 1.5 s
+        self._bfq = deque()                              # Binance futures (recv ms, price), 3 s
+        self.bv_last = {}                                # side -> (ms, predicted value) for the UI
         if self.mode == "live":
             self._load_live_maker()
 
@@ -307,16 +397,33 @@ class ImbMakerBot(GuardMakerBot):
         h = self.ex[src]
         h.clear()                                     # the UI needs the last tick only; the guard keeps its own
         h.append((recv, price))
+        if src == "binance_fut" and self.cfg.value_guard:
+            self._bfq.append((recv, price))
+            while self._bfq and self._bfq[0][0] < recv - 3000.0:
+                self._bfq.popleft()
         if src not in self.cfg.sources:
             return
         cfg = self.cfg
         g = self.guards.get(src)
         if g is None:
-            g = self.guards[src] = BinanceGuard(cfg.spike_bps, cfg.lookback_ms, cfg.pull_ms)
+            g = self.guards[src] = (FairGuard(cfg.spike_bps, cfg.lookback_ms, cfg.pull_ms, cfg.fair_thr, self._fair_scale)
+                                    if cfg.guard_mode == "fair" else BinanceGuard(cfg.spike_bps, cfg.lookback_ms, cfg.pull_ms))
         g.bps, g.win_ms, g.cool_ms = cfg.spike_bps, cfg.lookback_ms, cfg.pull_ms     # settings apply live
+        if isinstance(g, FairGuard):
+            g.thr = cfg.fair_thr
         side = g.on_tick(recv, price)
         if side:
             self._on_guard(src, g, side, price, recv)
+
+    def _fair_scale(self, t):
+        """FairGuard's sensitivity: pdf(inv_cdf(Up mid)) / sqrt(seconds left) of the active 5m window, else None."""
+        for m in self.markets.values():
+            if m.minutes == 5 and m.start <= t / 1000.0 < m.end:
+                mid, tau = m.mid("up"), m.end - t / 1000.0
+                if mid is None or tau < 5 or not 0.03 < mid < 0.97:
+                    return None
+                return _NORM.pdf(_NORM.inv_cdf(mid)) / math.sqrt(tau)
+        return None
 
     def _on_guard(self, src, g, side, price, now):
         """A trigger: every bid on the threatened token is cancelled now; the other side keeps quoting."""
@@ -357,7 +464,8 @@ class ImbMakerBot(GuardMakerBot):
             self._requote(m, now, force=True)         # the live side is cancelled here too
 
     def _guard_allow(self, now):
-        """(Up allowed, Down allowed, stale): every guard source must be live and quiet for a side to quote."""
+        """(Up allowed, Down allowed, stale): every guard source must be live and quiet for a side to quote; with
+        value_guard also the predicted value of the side's best bid >= value_cut."""
         up = dn = True
         for src in self.cfg.sources:
             g = self.guards.get(src)
@@ -365,7 +473,99 @@ class ImbMakerBot(GuardMakerBot):
                 return False, False, True
             a = g.allowed(now)
             up, dn = up and a[0], dn and a[1]
+        if self.cfg.value_guard and (up or dn):
+            for m in self.markets.values():
+                if m.minutes == 5 and m.start <= now / 1000.0 < m.end:
+                    if up:
+                        v = self._bid_value(m, "up", now)
+                        if v is not None and v < self.cfg.value_cut:
+                            up = False
+                            self.counts["value_block_up"] += 1
+                    if dn:
+                        v = self._bid_value(m, "down", now)
+                        if v is not None and v < self.cfg.value_cut:
+                            dn = False
+                            self.counts["value_block_down"] += 1
+                    break
         return up, dn, False
+
+    # ------------------------------------------------------------------ value guard
+    def _on_book_msg(self, m, d):
+        if not self.cfg.value_guard:
+            return super()._on_book_msg(m, d)
+        t = self.clock() * 1000.0
+        q = self._bv_msgs[m.slug]
+        q.append(t)
+        while q and q[0] < t - 1500.0:
+            q.popleft()
+        for e in d if isinstance(d, list) else [d]:
+            if e.get("event_type") == "last_trade_price":
+                side = m.side_of.get(e.get("asset_id"))
+                if side:
+                    self._bv_tr[(m.slug, side)].append((t, float(e.get("size") or 0.0)))
+        super()._on_book_msg(m, d)
+        for side in ("up", "down"):
+            b = m.best_bid(side)
+            k = (m.slug, side)
+            if self._bv_since.get(k, (None,))[0] != b:
+                self._bv_since[k] = (b, t)
+            h = self._bv_hist[k]
+            h.append((t, b, m.books[side]["bids"].get(b, 0.0) if b is not None else 0.0))
+            while h and h[0][0] < t - 2500.0:
+                h.popleft()
+        if len(self._bv_msgs) > 8:                    # forget closed windows
+            for slug in [x for x in self._bv_msgs if x not in self.markets]:
+                self._bv_msgs.pop(slug, None)
+                for side in ("up", "down"):
+                    for dd in (self._bv_hist, self._bv_since, self._bv_tr):
+                        dd.pop((slug, side), None)
+
+    def _bid_value(self, m, side, now):
+        """Predicted value (cents) of a fill at `side`'s best bid 10 s on (sweep_predict features), cached per market,
+        side and 100 ms; None outside 5..275 s into the window or a best bid outside 0.05..0.95."""
+        key = (self.cfg.value_model, m.slug, side, int(now // 100))
+        v = _BV_CACHE.get(key, False)
+        if v is not False:
+            return v
+        if len(_BV_CACHE) > 20000:
+            _BV_CACHE.clear()
+        bids, asks = m.books[side]["bids"], m.books[side]["asks"]
+        b, k = m.best_bid(side), m.best_ask(side)
+        t_in = now / 1000.0 - m.start
+        if b is None or k is None or not 0.05 <= b <= 0.95 or not 5 <= t_in <= 275:
+            _BV_CACHE[key] = None
+            return None
+        q1, a1 = bids.get(b, 0.0), asks.get(k, 0.0)
+        q2 = bids.get(round(b - 0.01, 2), 0.0)
+        q3 = sum(bids.get(round(b - 0.01 * j, 2), 0.0) for j in (1, 2, 3))
+        h = self._bv_hist[(m.slug, side)]
+
+        def ago(dt):
+            for hm, hb, hq in reversed(h):
+                if hm <= now - dt:
+                    return hq if hb == b else 0.0
+            return q1
+        tr = self._bv_tr[(m.slug, side)]
+        while tr and tr[0][0] < now - 2000.0:
+            tr.popleft()
+
+        def bf(t):
+            p = None
+            for r, x in self._bfq:
+                if r > t:
+                    break
+                p = x
+            return p
+        f0, f5, f2 = bf(now), bf(now - 500.0), bf(now - 2000.0)
+        sg = 1 if side == "up" else -1
+        x = [q1, q2, q3, a1, round((k - b) * 100), q1 / (q1 + a1) if q1 + a1 > 0 else 0.5,
+             min(now - self._bv_since.get((m.slug, side), (b, now))[1], 60000.0), q1 - ago(500.0), q1 - ago(2000.0),
+             sum(z for tm, z in tr if tm >= now - 500.0), sum(z for _, z in tr),
+             sum(1 for z in self._bv_msgs.get(m.slug, ()) if now - 500.0 <= z <= now),
+             sg * 1e4 * (f0 / f5 - 1) if f0 and f5 else 0.0, sg * 1e4 * (f0 / f2 - 1) if f0 and f2 else 0.0, b, t_in]
+        v = _BV_CACHE[key] = BidValueModel.get(self.cfg.value_model).predict(x)
+        self.bv_last[side] = (now, round(v, 2))
+        return v
 
     # ------------------------------------------------------------------ quoting
     def _requote(self, m, now, force=False):
@@ -451,6 +651,17 @@ class ImbMakerBot(GuardMakerBot):
         c_up, c_dn = self._spend_allow(st, m.total_cost(), net)
         want = ladders(cfg, bb, ba, d_up, d_dn, net, (g_up and c_up, g_dn and c_dn))
         out = {k: list(v.items()) for k, v in _by_token(want).items()}
+        if cfg.sticky_ticks and cfg.n_levels == 1:
+            for side in ("up", "down"):
+                if len(out[side]) != 1:
+                    continue
+                q, sz = out[side][0]
+                for o in m.orders:
+                    if (o.side == side and not o.taker and o.cancel_ms is None
+                            and q - cfg.sticky_ticks * 0.01 - 1e-9 <= o.price < q - 1e-9 and o.price >= cfg.min_price):
+                        out[side] = [(round(o.price, 4), sz)]
+                        self.counts["sticky_keeps"] += 1
+                        break
         why = {s: self._why(stale, g, not c, capped) for s, g, capped, c in
                (("up", g_up, net > cfg.inv_cap, c_up), ("down", g_dn, net < -cfg.inv_cap, c_dn))}
         tot = size_bb + size_ba
@@ -1099,7 +1310,7 @@ class ImbMakerBot(GuardMakerBot):
                 cg.light = True
                 threading.Thread(target=cg._init, daemon=True, name="cancel-gw").start()
                 self.fo = FastOrders(self.gw, cancel_gw=cg)
-            feeds += [self._live_resolver(), self._live_boot()]
+            feeds += [self._live_resolver(), self._live_boot(), self._live_heartbeat()]
         elif self.dry:
             self._lready = True
         tasks = [asyncio.create_task(c) for c in (*feeds, self._scheduler(), self._ticker(), self._clock(),
@@ -1113,6 +1324,30 @@ class ImbMakerBot(GuardMakerBot):
                 t.cancel()
             self._ws_tasks.clear()
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _live_heartbeat(self):
+        """Polymarket order heartbeats every live_heartbeat_s (late_fav's loop): once sent, the exchange cancels this
+        key's orders if they stop (a dead-man switch if the bot dies). A mismatch carries the expected id: retried."""
+        from polymarket.errors import OrderHeartbeatMismatchError
+        hb_id = ""
+        while True:
+            await asyncio.sleep(self.cfg.live_heartbeat_s if self.cfg.live_heartbeat_s > 0 else 5.0)
+            if self.cfg.live_heartbeat_s <= 0 or self.gw is None or not self.gw.enabled:
+                continue
+            for _ in range(2):
+                try:
+                    r = await self._loop.run_in_executor(self.gw.bg, lambda i=hb_id: self.gw.client.send_order_heartbeat(
+                        heartbeat_id=i))
+                    hb_id = r.heartbeat_id
+                    self.lstat["hb_ok"] += 1
+                    break
+                except OrderHeartbeatMismatchError as e:
+                    hb_id = e.heartbeat_id
+                    self.lstat["hb_mismatch"] += 1
+                except Exception as e:
+                    self.lstat["hb_errors"] += 1
+                    self._err(f"live heartbeat: {type(e).__name__}: {e}"[:200])
+                    break
 
     async def _live_boot(self):
         """Wait for the trading client, then cancel any order an earlier run of this bot left resting."""
