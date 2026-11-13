@@ -2,9 +2,6 @@
 
 Trade, run bots and reverse-engineer wallets on Polymarket's crypto **Up or Down** windows (BTC 5m/15m).
 
-**Start:** double-click `run_app.bat` and the app opens at http://127.0.0.1:8000.
-Closing the window stops the server. Bots run in their own processes and keep going.
-
 For how the code is organised, see [STRUCTURE.md](STRUCTURE.md).
 
 ## Trade
